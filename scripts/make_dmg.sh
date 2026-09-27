@@ -76,8 +76,13 @@ fi
 if [ -n "${SIGN_IDENTITY:-}" ]; then
   echo "==> Signing app"
   # --deep is deprecated and does not sign nested code correctly; sign the
-  # embedded dylib first, then the bundle.
-  find "$STAGE/vol/$VOLNAME.app/Contents/Frameworks" -name '*.dylib' -print0 2>/dev/null |
+  # nested code first, then the bundle. That is libwallet_ffi.dylib AND the
+  # frameworks (App, FlutterMacOS, plugins): Xcode leaves them ad-hoc signed,
+  # and notarization rejects any nested binary without a Developer ID
+  # signature and a timestamp. `find -depth` lists contents before their
+  # folder, so anything inside a framework is signed before the framework.
+  find "$STAGE/vol/$VOLNAME.app/Contents/Frameworks" -depth \
+      \( -name '*.dylib' -o -name '*.framework' \) -print0 2>/dev/null |
     while IFS= read -r -d '' lib; do
       codesign --force --timestamp --options runtime \
         --sign "$SIGN_IDENTITY" "$lib"
@@ -85,7 +90,8 @@ if [ -n "${SIGN_IDENTITY:-}" ]; then
   codesign --force --timestamp --options runtime \
     --entitlements src/templar_wallet/macos/Runner/Release.entitlements \
     --sign "$SIGN_IDENTITY" "$STAGE/vol/$VOLNAME.app"
-  codesign --verify --strict --verbose=2 "$STAGE/vol/$VOLNAME.app"
+  # --deep is fine for checking: it fails on any nested binary left unsigned.
+  codesign --verify --deep --strict --verbose=2 "$STAGE/vol/$VOLNAME.app"
 else
   echo "==> SIGN_IDENTITY unset — building an UNSIGNED dmg"
 fi

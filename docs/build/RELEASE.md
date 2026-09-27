@@ -363,16 +363,19 @@ these warnings: both need a paid identity certificate.
 | Platform | Requirement | Cost | Without it |
 |---|---|---|---|
 | macOS | **Developer ID Application** certificate from the Apple Developer Program, plus **notarization** | $99/year | "Apple could not verify… is free of malware." Opening takes the steps in RELEASE_NOTES.md. |
-| Windows | **Authenticode** code-signing certificate (OV or EV) | ~$200–600/year | SmartScreen: "Windows protected your PC" → *More info* → *Run anyway*. |
+| Windows | **Authenticode** signature: Azure Trusted Signing, or an OV certificate from a CA (§ 6b) | ~$120–400/year | SmartScreen: "Windows protected your PC" → *More info* → *Run anyway*. |
 
 Two things worth knowing before spending money:
 
 - **macOS notarization is all-or-nothing, and it works.** Sign, notarize and
   staple, and the warning is gone for every user, offline.
-- **Windows OV certificates do not silence SmartScreen at once.** SmartScreen
-  is reputation-based: a new OV signature still warns until enough people
-  have installed it. An **EV** certificate has reputation from day one, which
-  is the only reason to pay its premium.
+- **No Windows signature silences SmartScreen at once.** SmartScreen is
+  reputation-based: a new signature still warns until enough people have
+  installed files signed with it. EV certificates used to skip that wait;
+  Microsoft ended it in 2024, so EV is no longer worth its premium. Keep one
+  identity across releases so the reputation carries over.
+- **A signature is not an antivirus pass.** It names the publisher; heuristic
+  engines can still flag a wallet (keys, network, a custom installer). § 6c.
 
 **Wire signing into `release.yml`, not into a local build**, so a release stays
 one run whose files match `SHA256SUMS.txt`:
@@ -428,9 +431,16 @@ NOTARY_PROFILE="templar-notary" \
 # → dist/TemplarWallet-<version>-macos.dmg
 ```
 
+For CI, prefer an App Store Connect API key (App Store Connect → Users and
+Access → Integrations, role *Developer*) to the app-specific password: it is
+not tied to a person's Apple ID and can be revoked alone.
+`xcrun notarytool store-credentials templar-notary --key AuthKey_XXXX.p8
+--key-id XXXX --issuer <issuer-uuid>` stores it under the same profile name.
+
 With neither variable set it makes an unsigned DMG, which is what CI does.
-The script signs the embedded `libwallet_ffi.dylib` first and the bundle
-second (`--deep` is deprecated and signs nested code incorrectly), enables
+The script signs the nested code first (`libwallet_ffi.dylib` and every
+framework: App, FlutterMacOS, the plugins), then the bundle (`--deep` is
+deprecated and signs nested code incorrectly), enables
 the **hardened runtime** notarization requires, signs the DMG itself,
 submits it to Apple, and **staples** the ticket so the DMG opens cleanly on a
 machine with no network.
@@ -466,6 +476,27 @@ byte-identical and needs no AppleScript:
 
 ### 6b. Windows: Authenticode
 
+Since 2023 a code-signing key must live on a hardware token or in a cloud
+HSM, so the choice is really which signing service. As of September 2026
+(check eligibility when signing up, it changes):
+
+| Option | Cost | Who can get it | In CI |
+|---|---|---|---|
+| **Azure Trusted Signing** | ~$10/month | Companies with 3+ years of verifiable history (US, CA, EU, UK); individuals only in US/CA | Yes: official GitHub Action and a `signtool` plug-in |
+| **Certum Open Source Code Signing** (cloud) | ~€50–100/year | Individuals, for an open-source project (the repo needs a licence) | Awkward: SimplySign asks a phone code at login |
+| **OV certificate** with cloud signing (SSL.com eSigner, Sectigo, DigiCert KeyLocker…) | ~$200–400/year | Anyone the CA can verify | Yes (SSL.com CodeSignTool, DigiCert smctl) |
+
+A young company qualifies for Trusted Signing only after three years; until
+then an OV certificate in the company's name is the usual route. The
+signature shows the certificate's legal name, so buy it for the entity that
+will publish the wallet.
+
+Sign **every** executable file the build produces, not just the installer:
+`templar_wallet.exe`, `wallet_ffi.dll`, `flutter_windows.dll` and each plugin
+DLL in `build\windows\x64\runner\Release\`, then the installer (Inno Setup
+signs it and, with `SignedUninstaller=yes`, the uninstaller). The portable
+`.zip` then carries signed files too.
+
 With a certificate available to `signtool` (check with
 `certutil -user -store My`), define a sign tool in Inno Setup,
 **Tools → Configure Sign Tools… → Add**, named `templar`, with the command:
@@ -478,8 +509,10 @@ Sign the app itself first, so it is trusted and not just its wrapper, then
 compile with signing enabled:
 
 ```powershell
-signtool sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 /a `
-  src\templar_wallet\build\windows\x64\runner\Release\templar_wallet.exe
+$rel = 'src\templar_wallet\build\windows\x64\runner\Release'
+Get-ChildItem $rel -Recurse -Include *.exe,*.dll | ForEach-Object {
+  signtool sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 /a $_.FullName
+}
 iscc /DSIGN /DMyAppVersion=0.1.0 packaging\windows\templar-wallet.iss
 signtool verify /pa /v dist\TemplarWallet-*-setup.exe
 ```
@@ -488,6 +521,24 @@ signtool verify /pa /v dist\TemplarWallet-*-setup.exe
 stops validating the day the certificate expires, and installed copies start
 warning. Test on a **clean** Windows VM: the build machine trusts its own
 certificate and will not show what a stranger sees.
+
+### 6c. Antivirus false positives
+
+Signing tells Windows who published a file; it does not stop an engine that
+dislikes what the file does. For every release, before announcing it:
+
+1. Upload the installer and the zip to [VirusTotal](https://www.virustotal.com)
+   and read the result. One or two unknown engines are noise; Microsoft,
+   Kaspersky, ESET, Bitdefender or Avast flagging it is not.
+2. If Defender (or SmartScreen) flags it, submit it as a **software
+   developer** at <https://www.microsoft.com/en-us/wdsi/filesubmission>,
+   choosing "Incorrectly detected as malware". Answers take hours to days;
+   a signed file gets a faster, more lasting fix. Other vendors have their own
+   false-positive forms, linked from VirusTotal.
+3. Never pack or compress the executables (UPX and similar): packed binaries
+   are what malware looks like to a heuristic engine.
+4. Keep the publisher name, file names and installer stable across releases:
+   SmartScreen reputation follows the signing identity and the file.
 
 ---
 
