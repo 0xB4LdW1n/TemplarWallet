@@ -3163,6 +3163,7 @@ dependencies = [
  "dirs-next",
  "fs2",
  "once_cell",
+ "reqwest",
  "serde",
  "serde_json",
  "templar-core",

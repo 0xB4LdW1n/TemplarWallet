@@ -2259,6 +2259,355 @@ fn protocol_check_pset_is_built_signed_and_judged() {
     assert_ne!(regtest["pset_base64"], check["pset_base64"]);
 }
 
+// ── Live acceptance against the Templar Protocol site (regtest) ────────────
+//
+// The same dispatch the app's bridge calls, driven against the running site
+// (`cargo run -p squid-ops -- up` in the protocol repository; the site reads
+// its env from `data/regtest/regtest.env`). Ignored by default: each needs a
+// link the site hands out to a browser.
+//
+//   TEMPLAR_LIVE_CONNECT_LINK  the `templar://connect?…` link of /wallet
+//   TEMPLAR_LIVE_SIGN_LINK     a `templar://sign?…` link of a `proof` request
+//                              (the check page of «Ritrova» / a 0.1.0 reconnect)
+//   TEMPLAR_LIVE_MNEMONIC      the wallet to answer with (default: the test vector)
+//   TEMPLAR_LIVE_OUT           where to write the portfolio JSON, for a fixture
+//
+// Run one with
+//   TEMPLAR_LIVE_CONNECT_LINK='templar://connect?url=…&nonce=…' \
+//     cargo test -p wallet-ffi live_connect -- --ignored --nocapture
+
+fn live_env(name: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| panic!("set {name} (see the comment above)"))
+}
+
+fn live_mnemonic() -> String {
+    std::env::var("TEMPLAR_LIVE_MNEMONIC").unwrap_or_else(|_| MNEMONIC.to_string())
+}
+
+/// `templar://<action>?url=<percent-encoded>&nonce=<…>` → (url, nonce).
+fn live_link(link: &str, action: &str) -> (String, String) {
+    let (head, query) = link
+        .split_once('?')
+        .unwrap_or_else(|| panic!("no query in {link}"));
+    assert!(
+        head.trim_start_matches("templar://").trim_matches('/') == action,
+        "expected a templar://{action} link, got {head}"
+    );
+    let mut url = String::new();
+    let mut nonce = String::new();
+    for pair in query.split('&') {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        match k {
+            "url" => url = live_percent_decode(v),
+            "nonce" => nonce = live_percent_decode(v),
+            _ => {}
+        }
+    }
+    assert!(!url.is_empty() && !nonce.is_empty(), "link lacks url/nonce");
+    (url, nonce)
+}
+
+fn live_percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
+        i += 1;
+    }
+    String::from_utf8(out).expect("utf-8 link")
+}
+
+fn live_client() -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .expect("http client")
+}
+
+fn live_json(resp: reqwest::blocking::Response) -> (u16, Value) {
+    let status = resp.status().as_u16();
+    let text = resp.text().unwrap_or_default();
+    let body = serde_json::from_str(&text).unwrap_or_else(|_| json!({ "raw": text }));
+    (status, body)
+}
+
+fn live_get(url: &str) -> (u16, Value) {
+    live_json(
+        live_client()
+            .get(url)
+            .header("Accept", "application/json")
+            .send()
+            .unwrap_or_else(|e| panic!("GET {url}: {e}")),
+    )
+}
+
+fn live_post(url: &str, body: &Value) -> (u16, Value) {
+    live_json(
+        live_client()
+            .post(url)
+            .header("Accept", "application/json")
+            .json(body)
+            .send()
+            .unwrap_or_else(|e| panic!("POST {url}: {e}")),
+    )
+}
+
+fn live_bearer(method: &str, url: &str, token: &str, body: Option<&Value>) -> (u16, Value) {
+    let client = live_client();
+    let req = match method {
+        "POST" => client.post(url),
+        "DELETE" => client.delete(url),
+        _ => client.get(url),
+    }
+    .header("Accept", "application/json")
+    .bearer_auth(token);
+    let req = match body {
+        Some(b) => req.json(b),
+        None => req,
+    };
+    live_json(req.send().unwrap_or_else(|e| panic!("{method} {url}: {e}")))
+}
+
+/// A regtest environment holding the live wallet, opened.
+fn live_wallet(env: &mut TestEnv, site_policy_asset: Option<&str>) -> String {
+    let mut params = json!({ "network": "regtest" });
+    if let Some(p) = site_policy_asset {
+        params["policy_asset"] = json!(p);
+    }
+    env.ok("set_liquid_network", params);
+    let created = env.ok(
+        "create_wallet",
+        json!({ "name": "Live", "mnemonic": live_mnemonic(), "liquid": true }),
+    );
+    created["id"].as_str().unwrap().to_string()
+}
+
+/// §3 v1.1 + §7 + §8 against the live site: connect with the proof of key
+/// in the callback, get the portfolio token back, read the loans, mint a
+/// one-time browser link. What the Loans screen does, minus the pixels.
+#[test]
+#[ignore = "needs the protocol's regtest site and TEMPLAR_LIVE_CONNECT_LINK"]
+fn live_connect_with_proof_then_portfolio_and_open() {
+    let (url, nonce) = live_link(&live_env("TEMPLAR_LIVE_CONNECT_LINK"), "connect");
+    let (status, req) = live_get(&url);
+    assert_eq!(status, 200, "connect request: {req}");
+    assert_eq!(req["kind"], json!("connect"), "{req}");
+    assert_eq!(req["nonce"], json!(nonce), "{req}");
+    assert_eq!(req["network"], json!("liquid-regtest"), "{req}");
+    let challenge = req["challenge"]
+        .as_str()
+        .expect("a v1.1 site sends a challenge")
+        .to_string();
+    assert!(
+        challenge.starts_with("Templar Protocol · access · "),
+        "{challenge}"
+    );
+    assert!(
+        challenge.ends_with("this signature never moves funds"),
+        "{challenge}"
+    );
+    let callback = req["callback"].as_str().unwrap().to_string();
+
+    let mut env = TestEnv::new();
+    let id = live_wallet(&mut env, req["policy_asset"].as_str());
+    let info = env.ok("get_wallet_info", json!({ "wallet_id": id }));
+    let ct_descriptor = info["liquid_descriptor"].as_str().unwrap().to_string();
+    let escrow_xpub = env.ok("get_protocol_escrow_xpub", json!({ "wallet_id": id }));
+    let address = env.ok(
+        "generate_receive_address",
+        json!({ "wallet_id": id, "asset": "LBTC" }),
+    );
+
+    // The proof: built from the site's challenge, signed like any PSET.
+    // `TEMPLAR_LIVE_NO_PROOF=1` answers like Templar 0.1.0 instead — no
+    // proof — which, once the site knows the key, must lead to a `proof`
+    // signing request (§9.2) and hand out no token yet.
+    let no_proof = std::env::var("TEMPLAR_LIVE_NO_PROOF").is_ok();
+    let mut body = json!({
+        "version": 1,
+        "nonce": nonce,
+        "network": "liquid-regtest",
+        "ct_descriptor": ct_descriptor,
+        "escrow_xpub": escrow_xpub,
+        "receive_address": address["address"],
+        "wallet_name": "Templar — Live acceptance",
+        "signer": "software",
+    });
+    if !no_proof {
+        let check = env.ok(
+            "protocol_check_pset",
+            json!({ "wallet_id": id, "challenge": challenge }),
+        );
+        let signed = env.ok(
+            "sign_pset",
+            json!({ "wallet_id": id, "pset_base64": check["pset_base64"] }),
+        );
+        body["proof"] = json!({ "kind": "check-pset", "pset": signed });
+    }
+
+    let (status, reply) = live_post(&callback, &body);
+    assert_eq!(status, 200, "connect callback: {reply}");
+    assert_eq!(reply["ok"], json!(true), "{reply}");
+    eprintln!("connected; next = {}", reply["next"]);
+    if no_proof {
+        let next = reply["next"].as_str().unwrap_or_default();
+        assert!(
+            next.contains("/wallet/prove/"),
+            "a v1 reconnect of a known key must lead to the check page, got {reply}"
+        );
+        assert!(
+            reply["portfolio"].is_null(),
+            "no token before the key is proved: {reply}"
+        );
+        return;
+    }
+    let portfolio = &reply["portfolio"];
+    let p_url = portfolio["url"]
+        .as_str()
+        .expect("a v1.1 connect with a valid proof hands back portfolio.url");
+    let token = portfolio["token"]
+        .as_str()
+        .expect("portfolio.token")
+        .to_string();
+    assert_eq!(token.len(), 43, "32 bytes base64url");
+
+    // §7: the loans dashboard.
+    let (status, p) = live_bearer("GET", p_url, &token, None);
+    assert_eq!(status, 200, "portfolio: {p}");
+    assert_eq!(p["version"], json!(1));
+    assert_eq!(p["network"], json!("liquid-regtest"));
+    assert!(p["tip_height"].is_u64(), "{p}");
+    assert!(p["as_of"].is_i64() || p["as_of"].is_u64(), "{p}");
+    assert_eq!(p["wallet"]["escrow_fingerprint"], json!("73c5da0a"));
+    assert!(p["loans"].is_array(), "{p}");
+    assert!(p["offers"].is_array(), "{p}");
+    for l in p["loans"].as_array().unwrap() {
+        assert_keys(
+            "loan",
+            l,
+            &[
+                "id",
+                "ref",
+                "role",
+                "state",
+                "principal",
+                "collateral",
+                "interest",
+                "templar_fee",
+                "opened_at",
+                "start_height",
+                "term_height",
+                "blocks_left",
+                "due_at_estimate",
+                "owed",
+                "next_action",
+                "pending_request",
+                "txids",
+                "escrow_address",
+            ],
+        );
+    }
+    eprintln!(
+        "portfolio: {} loan(s), {} offer(s), tip {}",
+        p["loans"].as_array().unwrap().len(),
+        p["offers"].as_array().unwrap().len(),
+        p["tip_height"]
+    );
+    if let Ok(out) = std::env::var("TEMPLAR_LIVE_OUT") {
+        std::fs::write(&out, serde_json::to_string_pretty(&p).unwrap()).unwrap();
+        eprintln!("portfolio JSON written to {out}");
+    }
+
+    // §8: the one-time link, landing on the site's front page.
+    let open_url = p_url.trim_end_matches("/connector/portfolio").to_string() + "/connector/open";
+    let (status, o) = live_bearer("POST", &open_url, &token, Some(&json!({ "to": "/" })));
+    assert_eq!(status, 200, "open: {o}");
+    let link = o["url"].as_str().expect("one-time url");
+    assert!(link.contains("/connector/open/"), "{link}");
+    assert!(o["expires_at"].is_i64() || o["expires_at"].is_u64(), "{o}");
+    eprintln!("one-time browser link (2 min, single use): {link}");
+
+    // A wrong token is 401, and a wrong path on the open link is still same-site.
+    let (status, _) = live_bearer(
+        "GET",
+        p_url,
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        None,
+    );
+    assert_eq!(status, 401);
+}
+
+/// §9.2 / §9.5 against the live site: a `proof` signing request the site
+/// built is recognised as the check of its own challenge by the wallet's
+/// recomputation, signed once, and accepted by the site.
+#[test]
+#[ignore = "needs the protocol's regtest site and TEMPLAR_LIVE_SIGN_LINK (a proof request)"]
+fn live_proof_request_is_recognised_signed_and_accepted() {
+    let (url, nonce) = live_link(&live_env("TEMPLAR_LIVE_SIGN_LINK"), "sign");
+    let (status, req) = live_get(&url);
+    assert_eq!(status, 200, "sign request: {req}");
+    assert_eq!(req["kind"], json!("sign"), "{req}");
+    assert_eq!(req["nonce"], json!(nonce), "{req}");
+    assert_eq!(req["action"], json!("proof"), "{req}");
+    let challenge = req["challenge"].as_str().expect("challenge").to_string();
+    let pset = req["pset"].as_str().expect("pset").to_string();
+    let callback = req["callback"].as_str().unwrap().to_string();
+
+    let mut env = TestEnv::new();
+    let id = live_wallet(&mut env, req["policy_asset"].as_str());
+
+    // The wallet's own reading: not a coin of ours in the usual sense, 0, fee 0.
+    let d = env.ok(
+        "inspect_pset",
+        json!({ "wallet_id": id, "pset_base64": pset }),
+    );
+    assert_eq!(d["fee_sats"], json!(0), "{d}");
+    assert_eq!(d["inputs"][0]["amount_sats"], json!(0), "{d}");
+
+    // The site's check is byte-for-byte the wallet's own check.
+    let v = env.ok(
+        "protocol_is_check_pset",
+        json!({ "wallet_id": id, "challenge": challenge, "pset_base64": pset }),
+    );
+    assert_eq!(v["is_check"], json!(true), "{v}");
+
+    let signed = env.ok("sign_pset", json!({ "wallet_id": id, "pset_base64": pset }));
+    let (status, reply) = live_post(
+        &callback,
+        &json!({ "version": 1, "id": req["id"], "nonce": nonce, "pset": signed }),
+    );
+    assert_eq!(status, 200, "signed callback: {reply}");
+    assert_eq!(reply["ok"], json!(true), "{reply}");
+    eprintln!("proof accepted; next = {}", reply["next"]);
+    // §7: the token a v1 wallet did not get at connect arrives here, once
+    // the key is proved — what `_storePortfolioFromSign` in the app keeps.
+    let portfolio = &reply["portfolio"];
+    assert!(
+        portfolio["url"].is_string() && portfolio["token"].is_string(),
+        "the signed callback of a proof request carries the portfolio object: {reply}"
+    );
+    let (status, p) = live_bearer(
+        "GET",
+        portfolio["url"].as_str().unwrap(),
+        portfolio["token"].as_str().unwrap(),
+        None,
+    );
+    assert_eq!(status, 200, "portfolio after proof: {p}");
+    assert_eq!(p["wallet"]["escrow_fingerprint"], json!("73c5da0a"), "{p}");
+    eprintln!(
+        "portfolio token received with the proof; {} loan(s)",
+        p["loans"].as_array().map_or(0, Vec::len)
+    );
+}
+
 #[test]
 fn inspect_pset_describes_a_protocol_escrow_spend() {
     let mut env = TestEnv::new();

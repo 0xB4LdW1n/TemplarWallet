@@ -23,6 +23,12 @@ fs2 = "0.4"
 # Wipes response buffers that carried seed/xprv material before they are freed.
 zeroize = "1"
 
+[dev-dependencies]
+# The live acceptance tests in `contract_tests.rs` (ignored by default) talk
+# to the Templar Protocol's regtest site over plain HTTP. Same build of
+# reqwest templar-core already carries — nothing new enters the graph.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+
 [features]
 default = ["hardware"]
 # USB hardware wallets (see templar-core). Off on Android: every hardware
