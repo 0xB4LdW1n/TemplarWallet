@@ -16,6 +16,8 @@
 /// Refresh and lives in memory only. The site is the ledger.
 library;
 
+export 'protocol_link.dart' show protocolActionLabel;
+
 /// `state` of a loan on the site. [unknown] carries the raw text.
 enum ProtocolLoanState {
   originating,
@@ -461,19 +463,6 @@ String protocolBpsLabel(int bps) {
   final frac = rest.toString().padLeft(2, '0').replaceFirst(RegExp(r'0$'), '');
   return '$whole.$frac%';
 }
-
-/// `origination` → `Loan origination`, the vocabulary of the sign screen.
-String protocolActionLabel(String action) => switch (action) {
-      'origination' => 'Loan origination',
-      'repayment' => 'Repayment',
-      'installment' => 'Installment',
-      'default' => 'Default settlement',
-      'liquidation' => 'Liquidation',
-      'swap' => 'Swap',
-      'proof' => 'Proof of key',
-      '' => 'Signing request',
-      final other => other,
-    };
 
 String _str(Object? v) => v is String ? v.trim() : (v == null ? '' : v.toString());
 

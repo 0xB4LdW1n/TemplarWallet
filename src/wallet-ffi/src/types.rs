@@ -666,6 +666,44 @@ pub struct PsetParams {
     pub pset_base64: String,
 }
 
+/// `protocol_check_pset`: build the proof-of-key check (connector-protocol.md
+/// §9.1) for this wallet's loan key and a site's challenge text.
+#[derive(Deserialize, Debug)]
+pub struct ProtocolCheckParams {
+    pub wallet_id: String,
+    /// The exact challenge line the site sent (`Templar Protocol · access · …`).
+    pub challenge: String,
+}
+
+/// `protocol_is_check_pset`: is this PSET exactly the check of `challenge`
+/// for this wallet's loan key?
+#[derive(Deserialize, Debug)]
+pub struct ProtocolIsCheckParams {
+    pub wallet_id: String,
+    pub challenge: String,
+    pub pset_base64: String,
+}
+
+/// The unsigned check PSET, and the key it is for.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ProtocolCheckDto {
+    pub pset_base64: String,
+    /// The loan account in keyorigin form, the same value `escrow_xpub` carries.
+    pub loan_key: String,
+    /// Master fingerprint of that key, lower-case hex.
+    pub fingerprint: String,
+}
+
+/// The verdict the proof review screen shows and acts on (§9.5).
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ProtocolCheckVerdictDto {
+    pub is_check: bool,
+    /// Why not, in words, when `is_check` is false.
+    pub reason: Option<String>,
+    /// Fingerprint of the loan key the check was judged against.
+    pub loan_key_fingerprint: String,
+}
+
 #[derive(Deserialize, Debug)]
 pub struct CombinePsetsParams {
     pub wallet_id: String,

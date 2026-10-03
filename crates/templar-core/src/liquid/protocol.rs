@@ -20,11 +20,25 @@
 //! fingerprint — which is exactly what [`crate::LiquidWalletManager::sign`]
 //! already does for multisig co-signing.
 
+use std::str::FromStr;
+
 use lwk_common::Signer;
 use lwk_signer::SwSigner;
-use lwk_wollet::bitcoin::bip32::DerivationPath;
+use lwk_wollet::bitcoin::bip32::{ChildNumber, DerivationPath, Fingerprint};
+use lwk_wollet::bitcoin::PublicKey;
+use lwk_wollet::elements::hashes::{sha256, Hash};
+use lwk_wollet::elements::pset::{Input, Output, PartiallySignedTransaction, PsbtSighashType};
+use lwk_wollet::elements::secp256k1_zkp::{ecdsa::Signature, Message};
+use lwk_wollet::elements::sighash::SighashCache;
+use lwk_wollet::elements::{
+    confidential, EcdsaSighashType, OutPoint, PubkeyHash, Script, Sequence, TxOut, TxOutWitness,
+    Txid, WPubkeyHash,
+};
+use lwk_wollet::elements_miniscript::DescriptorPublicKey;
+use lwk_wollet::EC;
 
 use crate::error::{LiquidError, TemplarError};
+use crate::liquid::network::LiquidNetwork;
 
 /// Hardened derivation path (below the master key) of the escrow account a
 /// wallet contributes to Templar Protocol loan contracts: `m/2121'/1'/0'`
@@ -55,6 +69,272 @@ pub fn escrow_xpub_from_mnemonic(mnemonic: &str) -> Result<String, TemplarError>
     let signer = SwSigner::new(mnemonic, false)
         .map_err(|e| LiquidError::InvalidDescriptor(format!("SwSigner: {e}")))?;
     escrow_account_xpub(&signer)
+}
+
+// ── Proof of key: the check PSET (connector-protocol.md §9) ──────────────────
+//
+// A site identifies a wallet by its loan key — the `2121h` escrow account,
+// or a Jade's `87h` BIP87 account — and lets it back in by a signature on a
+// transaction that can never be broadcast: one input whose prevout is
+// `sha256("templar-proof" ‖ challenge)`, a hash no transaction has, carrying
+// an explicit 0 L-BTC `witness_utxo` to P2WPKH(loan key `/0/0`); one
+// `OP_RETURN(challenge)` output; a fee output of 0. The sighash commits to
+// the prevout and hence to the challenge (origin · nonce · expiry), so one
+// proof is good for one site and one challenge. The wallet both builds it
+// (v1.1 connect, §9.3) and recognises it (a `templar://sign` request with
+// action `proof`, §9.2 / §9.5): nothing under that action is signed unless
+// it is byte-for-byte the check of the request's own challenge and this
+// wallet's own key.
+
+/// Tag in front of the challenge bytes when the fake prevout is hashed.
+pub const PROOF_PREVOUT_TAG: &[u8] = b"templar-proof";
+
+/// The BIP87 account a Jade exports (`keyorigin_xpub(Bip87)`), accepted by the
+/// site as a loan key beside [`ESCROW_KEY_PATH`].
+pub const LOAN_KEY_PATH_BIP87: &str = "87h/1h/0h";
+
+/// `sha256(PROOF_PREVOUT_TAG ‖ challenge)` as a txid: the prevout of the one
+/// input. A real txid is a double SHA-256 of a serialized transaction; this
+/// is a single, tagged SHA-256 of text, so no chain holds it and the check
+/// can never spend anything.
+pub fn proof_fake_txid(challenge: &str) -> Txid {
+    let mut data = Vec::with_capacity(PROOF_PREVOUT_TAG.len() + challenge.len());
+    data.extend_from_slice(PROOF_PREVOUT_TAG);
+    data.extend_from_slice(challenge.as_bytes());
+    Txid::from_byte_array(sha256::Hash::hash(&data).to_byte_array())
+}
+
+/// The key a check is signed with: `K/0/0` of the loan account `K` given in
+/// keyorigin form (`[fp/2121h/1h/0h]tpub…` or `[fp/87h/1h/0h]tpub…`), with
+/// the master fingerprint and the full path the PSET's `bip32_derivation`
+/// names. A key without origin, with a wildcard or with a path already
+/// appended is refused: the site only knows the bare account.
+pub fn loan_key_at_zero(
+    account_xpub_with_origin: &str,
+) -> Result<(PublicKey, Fingerprint, DerivationPath), TemplarError> {
+    let bad = |why: String| {
+        TemplarError::from(LiquidError::InvalidDescriptor(format!("loan key: {why}")))
+    };
+    let key = DescriptorPublicKey::from_str(account_xpub_with_origin.trim())
+        .map_err(|e| bad(e.to_string()))?;
+    let DescriptorPublicKey::XPub(xkey) = key else {
+        return Err(bad("not an extended key".into()));
+    };
+    if !xkey.derivation_path.is_empty()
+        || xkey.wildcard != lwk_wollet::elements_miniscript::descriptor::Wildcard::None
+    {
+        return Err(bad(
+            "an account key carries no derivation after the xpub".into()
+        ));
+    }
+    let (fingerprint, origin_path) = xkey
+        .origin
+        .ok_or_else(|| bad("missing keyorigin ([fingerprint/path])".into()))?;
+    if origin_path.is_empty() {
+        return Err(bad("empty keyorigin path".into()));
+    }
+    let zero = ChildNumber::from_normal_idx(0).expect("0 is a valid index");
+    let leaf = [zero, zero];
+    let derived = xkey
+        .xkey
+        .derive_pub(&EC, &leaf)
+        .map_err(|e| bad(format!("derive /0/0: {e}")))?;
+    Ok((
+        PublicKey::new(derived.public_key),
+        fingerprint,
+        origin_path.extend(leaf),
+    ))
+}
+
+fn p2wpkh(pk: &PublicKey) -> Script {
+    Script::new_v0_wpkh(&WPubkeyHash::hash(&pk.to_bytes()))
+}
+
+/// BIP-143 script code of a P2WPKH input: the P2PKH script of its key.
+fn p2wpkh_script_code(pk: &PublicKey) -> Script {
+    Script::new_p2pkh(&PubkeyHash::hash(&pk.to_bytes()))
+}
+
+/// Builds the check PSET of §9.1 for `challenge` and the loan key
+/// `account_xpub_with_origin`, deterministically: PSET v2, one input on
+/// [`proof_fake_txid`] (sequence `0xffffffff`, explicit 0 of `network`'s
+/// policy asset to P2WPKH(`K/0/0`), `bip32_derivation` for that key,
+/// `SIGHASH_ALL`), output 0 = `OP_RETURN(challenge)` explicit 0, output 1 =
+/// fee 0, locktime 0. The network decides the policy asset, which the
+/// shape commits to — a check for testnet is not a check for regtest.
+pub fn check_pset(
+    challenge: &str,
+    account_xpub_with_origin: &str,
+    network: &LiquidNetwork,
+) -> Result<PartiallySignedTransaction, TemplarError> {
+    if challenge.trim().is_empty() {
+        return Err(LiquidError::PsetBuildFailed("check PSET: empty challenge".into()).into());
+    }
+    let (pk, fingerprint, path) = loan_key_at_zero(account_xpub_with_origin)?;
+    let policy_asset = network.policy_asset();
+    let mut input = Input::from_prevout(OutPoint::new(proof_fake_txid(challenge), 0));
+    input.sequence = Some(Sequence::MAX);
+    input.witness_utxo = Some(TxOut {
+        asset: confidential::Asset::Explicit(policy_asset),
+        value: confidential::Value::Explicit(0),
+        nonce: confidential::Nonce::Null,
+        script_pubkey: p2wpkh(&pk),
+        witness: TxOutWitness::default(),
+    });
+    input.bip32_derivation.insert(pk, (fingerprint, path));
+    input.sighash_type = Some(PsbtSighashType::from(EcdsaSighashType::All));
+    let mut pset = PartiallySignedTransaction::new_v2();
+    pset.add_input(input);
+    pset.add_output(Output::new_explicit(
+        Script::new_op_return(challenge.as_bytes()),
+        0,
+        policy_asset,
+        None,
+    ));
+    pset.add_output(Output::from_txout(TxOut::new_fee(0, policy_asset)));
+    Ok(pset)
+}
+
+/// Why `pset` is not the check PSET of `challenge` for `our_xpub` on
+/// `network` (§9.5) — or `Ok(())` when it is exactly that, signed or not.
+///
+/// The expected check is rebuilt from the challenge and the key and compared
+/// on the unsigned transaction (prevout, sequence, both outputs, locktime)
+/// and on the input's coin (asset, value 0, script), so a real-looking
+/// prevout, a coin worth anything, another challenge, another key, an extra
+/// input or output, or another chain's policy asset all name their reason.
+pub fn check_pset_shape(
+    pset: &PartiallySignedTransaction,
+    challenge: &str,
+    our_xpub: &str,
+    network: &LiquidNetwork,
+) -> Result<(), TemplarError> {
+    let shape = |why: &str| {
+        TemplarError::from(LiquidError::PsetInspectionFailed(format!(
+            "not a check PSET: {why}"
+        )))
+    };
+    let expected = check_pset(challenge, our_xpub, network)?;
+    if pset.inputs().len() != 1 {
+        return Err(shape(&format!(
+            "expected one input, found {}",
+            pset.inputs().len()
+        )));
+    }
+    if pset.outputs().len() != 2 {
+        return Err(shape(&format!(
+            "expected two outputs (the challenge and a zero fee), found {}",
+            pset.outputs().len()
+        )));
+    }
+    let input = &pset.inputs()[0];
+    let want = &expected.inputs()[0];
+    let Some(utxo) = &input.witness_utxo else {
+        return Err(shape("the input has no witness_utxo"));
+    };
+    if utxo.value != confidential::Value::Explicit(0) {
+        return Err(shape(
+            "the input is a coin worth something, not the zero-value check",
+        ));
+    }
+    if utxo.asset != confidential::Asset::Explicit(network.policy_asset()) {
+        return Err(shape(&format!(
+            "the input's asset is not {}'s L-BTC",
+            network.name()
+        )));
+    }
+    if utxo.script_pubkey != want.witness_utxo.as_ref().expect("built").script_pubkey {
+        return Err(shape("the input does not belong to this wallet's loan key"));
+    }
+    if input.previous_txid != want.previous_txid || input.previous_output_index != 0 {
+        return Err(shape(
+            "the input spends a real-looking outpoint, not the challenge hash",
+        ));
+    }
+    let got_tx = pset
+        .extract_tx()
+        .map_err(|e| shape(&format!("unreadable transaction: {e}")))?;
+    let want_tx = expected.extract_tx().expect("the built check extracts");
+    if got_tx.txid() != want_tx.txid() {
+        // Same prevout, same coin, yet a different transaction: an output,
+        // the sequence or the locktime was changed.
+        if !got_tx.output[0].script_pubkey.is_op_return()
+            || got_tx.output[0].script_pubkey != want_tx.output[0].script_pubkey
+        {
+            return Err(shape(
+                "output 0 is not OP_RETURN of this request's challenge",
+            ));
+        }
+        if got_tx.output[0].value != confidential::Value::Explicit(0) {
+            return Err(shape("the challenge output carries a value"));
+        }
+        if !got_tx.output[1].is_fee() || got_tx.output[1].value != confidential::Value::Explicit(0)
+        {
+            return Err(shape("the fee is not zero"));
+        }
+        return Err(shape(
+            "the transaction differs from the check (sequence, locktime or an output field)",
+        ));
+    }
+    Ok(())
+}
+
+/// [`check_pset_shape`] as a yes/no.
+pub fn is_check_pset(
+    pset: &PartiallySignedTransaction,
+    challenge: &str,
+    our_xpub: &str,
+    network: &LiquidNetwork,
+) -> bool {
+    check_pset_shape(pset, challenge, our_xpub, network).is_ok()
+}
+
+/// §9.4 steps 1–2, the site's verification, kept here so the wallet's
+/// tests prove what a site will accept: the shape, then `partial_sigs[K/0/0]`
+/// as a low-S DER signature with `SIGHASH_ALL` over the segwit v0 sighash
+/// recomputed from the rebuilt check.
+pub fn verify_check_signature(
+    pset: &PartiallySignedTransaction,
+    challenge: &str,
+    xpub: &str,
+    network: &LiquidNetwork,
+) -> Result<(), TemplarError> {
+    check_pset_shape(pset, challenge, xpub, network)?;
+    let sig_err = |why: String| {
+        TemplarError::from(LiquidError::SigningFailed(format!(
+            "check signature: {why}"
+        )))
+    };
+    let (pk, _, _) = loan_key_at_zero(xpub)?;
+    let raw = pset.inputs()[0]
+        .partial_sigs
+        .get(&pk)
+        .ok_or_else(|| sig_err("no signature from the loan key".into()))?;
+    let (hash_ty, der) = raw
+        .split_last()
+        .ok_or_else(|| sig_err("empty signature".into()))?;
+    if *hash_ty != 0x01 {
+        return Err(sig_err("sighash type is not SIGHASH_ALL".into()));
+    }
+    let sig = Signature::from_der(der).map_err(|e| sig_err(format!("DER: {e}")))?;
+    let mut low_s = sig;
+    low_s.normalize_s();
+    if low_s != sig {
+        return Err(sig_err("high-S signature".into()));
+    }
+    let tx = check_pset(challenge, xpub, network)?
+        .extract_tx()
+        .expect("the built check extracts");
+    let mut cache = SighashCache::new(&tx);
+    let sighash = cache.segwitv0_sighash(
+        0,
+        &p2wpkh_script_code(&pk),
+        confidential::Value::Explicit(0),
+        EcdsaSighashType::All,
+    );
+    let msg = Message::from_digest(sighash.to_byte_array());
+    EC.verify_ecdsa(&msg, &sig, &pk.inner)
+        .map_err(|_| sig_err("the signature does not verify for the loan key".into()))
 }
 
 #[cfg(test)]
@@ -375,5 +655,226 @@ pub(crate) mod tests {
             "ESCROW_FIXTURE={}",
             LiquidWalletManager::pset_to_base64(&pset).unwrap()
         );
+    }
+
+    // ── Proof of key (§9) ───────────────────────────────────────────────────
+
+    const CHALLENGE: &str = "Templar Protocol · access · http://127.0.0.1:8087 · \
+                             nonce=AAAAAAAAAAAAAAAAAAAAAA · expires=2026-10-03T10:15:00Z · \
+                             this signature never moves funds";
+
+    #[test]
+    fn fake_txid_is_tagged_and_deterministic() {
+        let a = proof_fake_txid("x");
+        assert_eq!(a, proof_fake_txid("x"));
+        assert_ne!(a, proof_fake_txid("y"));
+        let mut data = PROOF_PREVOUT_TAG.to_vec();
+        data.extend_from_slice(b"x");
+        assert_eq!(a.to_byte_array(), sha256::Hash::hash(&data).to_byte_array());
+    }
+
+    #[test]
+    fn loan_key_at_zero_reads_both_accounts_and_refuses_the_rest() {
+        let signer = SwSigner::new(MNEMONIC_BORROWER, false).unwrap();
+        let k2121 = escrow_account_xpub(&signer).unwrap();
+        let (pk, fp, path) = loan_key_at_zero(&k2121).unwrap();
+        assert_eq!(fp, signer.fingerprint());
+        assert_eq!(path.to_string(), "2121'/1'/0'/0/0");
+        assert!(pk.compressed);
+        // The spelling with apostrophes names the same key.
+        let (pk2, _, _) = loan_key_at_zero(&k2121.replace('h', "'")).unwrap();
+        assert_eq!(pk, pk2);
+
+        let k87 = Signer::keyorigin_xpub(&signer, lwk_common::Bip::Bip87, false).unwrap();
+        assert!(k87.contains("/87h/1h/0h]"), "{k87}");
+        let (pk87, fp87, path87) = loan_key_at_zero(&k87).unwrap();
+        assert_eq!(fp87, fp);
+        assert_eq!(path87.to_string(), "87'/1'/0'/0/0");
+        assert_ne!(pk87, pk);
+
+        // No origin, a wildcard, a derivation after the account, garbage.
+        let bare = k2121.split(']').nth(1).unwrap();
+        assert!(loan_key_at_zero(bare).is_err());
+        assert!(loan_key_at_zero(&format!("{k2121}/<0;1>/*")).is_err());
+        assert!(loan_key_at_zero(&format!("{k2121}/0/*")).is_err());
+        assert!(loan_key_at_zero(&format!("{k2121}/0/0")).is_err());
+        assert!(loan_key_at_zero("[deadbeef/2121h/1h/0h]tpubFake").is_err());
+        assert!(loan_key_at_zero("").is_err());
+    }
+
+    /// Build → one software signature → the site's own verification passes,
+    /// through the wallet manager and through the wire encoding.
+    #[test]
+    fn check_pset_is_built_signed_once_and_verifies() {
+        let network = LiquidNetwork::testnet();
+        let xpub = escrow_xpub_from_mnemonic(MNEMONIC_BORROWER).unwrap();
+        let pset = check_pset(CHALLENGE, &xpub, &network).unwrap();
+        assert_eq!(
+            pset,
+            check_pset(CHALLENGE, &xpub, &network).unwrap(),
+            "deterministic"
+        );
+
+        let tx = pset.extract_tx().unwrap();
+        assert_eq!((tx.input.len(), tx.output.len()), (1, 2));
+        assert_eq!(
+            tx.input[0].previous_output,
+            OutPoint::new(proof_fake_txid(CHALLENGE), 0)
+        );
+        assert_eq!(tx.input[0].sequence, Sequence::MAX);
+        assert!(tx.output[0].script_pubkey.is_op_return());
+        assert_eq!(tx.output[0].value, confidential::Value::Explicit(0));
+        assert_eq!(
+            tx.output[0].asset,
+            confidential::Asset::Explicit(network.policy_asset())
+        );
+        assert!(tx.output[1].is_fee());
+        assert_eq!(tx.output[1].value, confidential::Value::Explicit(0));
+        assert_eq!(tx.lock_time, lwk_wollet::elements::LockTime::ZERO);
+        let input = &pset.inputs()[0];
+        let utxo = input.witness_utxo.as_ref().unwrap();
+        assert!(utxo.script_pubkey.is_v0_p2wpkh());
+        assert_eq!(utxo.value, confidential::Value::Explicit(0));
+        assert_eq!(input.bip32_derivation.len(), 1);
+        let (fp, path) = input.bip32_derivation.values().next().unwrap();
+        assert_eq!(fp.to_string(), "73c5da0a");
+        assert_eq!(path.to_string(), "2121'/1'/0'/0/0");
+        assert!(is_check_pset(&pset, CHALLENGE, &xpub, &network));
+        // Unsigned: the shape is right, the signature is missing.
+        assert!(verify_check_signature(&pset, CHALLENGE, &xpub, &network)
+            .unwrap_err()
+            .to_string()
+            .contains("no signature"));
+
+        // The wallet signs it like any PSET naming its key: exactly once.
+        let borrower =
+            LiquidWalletManager::from_mnemonic_with_persist_on(&network, MNEMONIC_BORROWER, None)
+                .unwrap();
+        let mut signed = LiquidWalletManager::pset_from_base64(
+            &LiquidWalletManager::pset_to_base64(&pset).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(borrower.sign(&mut signed).unwrap(), 1);
+        assert_eq!(signed.inputs()[0].partial_sigs.len(), 1);
+        assert_eq!(
+            borrower.sign(&mut signed).unwrap(),
+            0,
+            "nothing left to sign"
+        );
+        let back = LiquidWalletManager::pset_from_base64(
+            &LiquidWalletManager::pset_to_base64(&signed).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            is_check_pset(&back, CHALLENGE, &xpub, &network),
+            "still the check once signed"
+        );
+        verify_check_signature(&back, CHALLENGE, &xpub, &network).unwrap();
+
+        // The wallet's own reading: not its coin, 0, an OP_RETURN, fee 0.
+        let d = borrower.inspect_pset(&back).unwrap();
+        assert_eq!(d.inputs.len(), 1);
+        assert!(d.inputs[0].is_ours, "the loan key is this wallet's");
+        assert_eq!(d.inputs[0].amount, Some(0));
+        assert_eq!(d.inputs[0].signed_by, vec!["73c5da0a".to_string()]);
+        assert_eq!(d.fee, 0);
+        assert!(d.outputs.iter().any(|o| o.kind == "fee"));
+        assert!(!d.has_unverified_outputs());
+
+        // A stranger's key is not in it.
+        let stranger =
+            LiquidWalletManager::from_mnemonic_with_persist_on(&network, MNEMONIC_LENDER, None)
+                .unwrap();
+        let mut untouched = pset.clone();
+        assert_eq!(stranger.sign(&mut untouched).unwrap(), 0);
+
+        // The 87h account is a loan key too.
+        let signer = SwSigner::new(MNEMONIC_BORROWER, false).unwrap();
+        let k87 = Signer::keyorigin_xpub(&signer, lwk_common::Bip::Bip87, false).unwrap();
+        let mut c87 = check_pset(CHALLENGE, &k87, &network).unwrap();
+        assert!(
+            !is_check_pset(&c87, CHALLENGE, &xpub, &network),
+            "another key, another check"
+        );
+        assert_eq!(borrower.sign(&mut c87).unwrap(), 1);
+        verify_check_signature(&c87, CHALLENGE, &k87, &network).unwrap();
+    }
+
+    /// Everything that is almost a check is not one, and says why.
+    #[test]
+    fn anything_but_the_exact_check_is_refused() {
+        let network = LiquidNetwork::testnet();
+        let xpub = escrow_xpub_from_mnemonic(MNEMONIC_BORROWER).unwrap();
+        let fresh = || check_pset(CHALLENGE, &xpub, &network).unwrap();
+        let why = |p: &PartiallySignedTransaction, ch: &str, k: &str, n: &LiquidNetwork| {
+            assert!(!is_check_pset(p, ch, k, n));
+            check_pset_shape(p, ch, k, n).unwrap_err().to_string()
+        };
+
+        // A real-looking input: the escrow spend of the loan tests.
+        let real = escrow_spend_pset(&network, dummy_payout_script(), 1_000_000, 999_500);
+        assert!(why(&real, CHALLENGE, &xpub, &network).contains("worth something"));
+
+        // A real prevout under the right coin.
+        let mut prevout = fresh();
+        prevout.inputs_mut()[0].previous_txid = Txid::from_byte_array([0x11; 32]);
+        assert!(why(&prevout, CHALLENGE, &xpub, &network).contains("real-looking outpoint"));
+
+        // A coin worth one satoshi.
+        let mut rich = fresh();
+        rich.inputs_mut()[0].witness_utxo.as_mut().unwrap().value =
+            confidential::Value::Explicit(1);
+        assert!(why(&rich, CHALLENGE, &xpub, &network).contains("worth something"));
+
+        // Another challenge, another site: another transaction.
+        assert!(
+            why(&fresh(), "another challenge", &xpub, &network).contains("real-looking outpoint")
+        );
+        let other_site = CHALLENGE.replace("127.0.0.1:8087", "evil.example");
+        assert!(!is_check_pset(&fresh(), &other_site, &xpub, &network));
+
+        // Another wallet's key: the coin is somebody else's.
+        let lender = escrow_xpub_from_mnemonic(MNEMONIC_LENDER).unwrap();
+        assert!(why(&fresh(), CHALLENGE, &lender, &network).contains("loan key"));
+
+        // A second output, or a fee that is not zero.
+        let mut extra = fresh();
+        extra.add_output(Output::new_explicit(
+            dummy_payout_script(),
+            0,
+            network.policy_asset(),
+            None,
+        ));
+        assert!(why(&extra, CHALLENGE, &xpub, &network).contains("two outputs"));
+        let mut fee = fresh();
+        fee.outputs_mut()[1].amount = Some(1);
+        let fee_tx_differs = why(&fee, CHALLENGE, &xpub, &network);
+        assert!(
+            fee_tx_differs.contains("fee is not zero"),
+            "{fee_tx_differs}"
+        );
+
+        // Someone else's text in the OP_RETURN.
+        let mut text = fresh();
+        text.outputs_mut()[0].script_pubkey = Script::new_op_return(b"something else");
+        assert!(why(&text, CHALLENGE, &xpub, &network).contains("OP_RETURN"));
+
+        // A second input.
+        let mut two = fresh();
+        two.add_input(fresh().inputs()[0].clone());
+        assert!(why(&two, CHALLENGE, &xpub, &network).contains("one input"));
+
+        // Another chain's L-BTC.
+        let regtest = LiquidNetwork::regtest_default();
+        assert!(why(&fresh(), CHALLENGE, &xpub, &regtest).contains("L-BTC"));
+        assert!(is_check_pset(
+            &check_pset(CHALLENGE, &xpub, &regtest).unwrap(),
+            CHALLENGE,
+            &xpub,
+            &regtest
+        ));
+
+        // No challenge is no check.
+        assert!(check_pset("", &xpub, &network).is_err());
     }
 }

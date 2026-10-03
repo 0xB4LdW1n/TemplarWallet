@@ -34,7 +34,8 @@ TemplarWallet/
 │       └── liquid/             # wallet (LWK), multisig, pset, assets,
 │                               #   watch_only, hardware (Jade),
 │                               #   liquidex.rs + book.rs (v0 swaps),
-│                               #   protocol.rs (Templar Protocol escrow key)
+│                               #   protocol.rs (Templar Protocol escrow key,
+│                               #   proof-of-key check PSET)
 │
 ├── src/wallet-ffi/             # C ABI bridge -> libwallet_ffi.{dylib,so,dll}
 │   └── src/                    # lib.rs exports wallet_call + wallet_free_string

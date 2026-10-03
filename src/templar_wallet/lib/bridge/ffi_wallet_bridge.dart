@@ -22,6 +22,7 @@ import '../features/liquid/models/issue_result.dart';
 import '../features/swap/models/swap_offer.dart';
 import '../features/peg/models/peg_models.dart';
 import '../features/send/models/tx_preview.dart';
+import '../features/protocol/models/protocol_proof.dart';
 import '../features/psbt/models/psbt_inspection.dart';
 import '../features/psbt/models/pset_inspection.dart';
 import 'wallet_bridge.dart';
@@ -884,6 +885,26 @@ class FfiWalletBridge implements WalletBridge {
   @override
   Future<String> getProtocolEscrowXpub(String walletId) async =>
       await _ok('get_protocol_escrow_xpub', {'wallet_id': walletId}) as String;
+
+  @override
+  Future<ProtocolCheck> protocolCheckPset(String walletId, String challenge) async {
+    final raw = await _ok('protocol_check_pset', {
+      'wallet_id': walletId,
+      'challenge': challenge,
+    }) as Map<String, dynamic>;
+    return ProtocolCheck.fromJson(raw);
+  }
+
+  @override
+  Future<ProtocolCheckVerdict> protocolIsCheckPset(
+      String walletId, String challenge, String psetBase64) async {
+    final raw = await _ok('protocol_is_check_pset', {
+      'wallet_id': walletId,
+      'challenge': challenge,
+      'pset_base64': psetBase64,
+    }) as Map<String, dynamic>;
+    return ProtocolCheckVerdict.fromJson(raw);
+  }
 
   @override
   Future<VaultStatus> vaultStatus() async {

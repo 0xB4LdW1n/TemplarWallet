@@ -2094,6 +2094,171 @@ fn get_protocol_escrow_xpub_has_the_protocol_shape() {
     assert!(err.contains("not found"), "{err}");
 }
 
+/// The exact §9.1 challenge line a site sends; the proof is bound to it.
+const CHALLENGE: &str = "Templar Protocol · access · http://127.0.0.1:8087 · \
+                         nonce=AAAAAAAAAAAAAAAAAAAAAA · expires=2026-10-03T10:15:00Z · \
+                         this signature never moves funds";
+
+/// Proof of key, end to end through the FFI: the check is built for the
+/// wallet's escrow key, reads as "not my coin, 0, OP_RETURN, fee 0", is
+/// recognised as the check of its own challenge, signs once through the
+/// ordinary `sign_pset` route and is still recognised afterwards; anything
+/// else under the same challenge is refused with a reason.
+#[test]
+fn protocol_check_pset_is_built_signed_and_judged() {
+    let mut env = TestEnv::new();
+    let created = env.ok(
+        "create_wallet",
+        json!({ "name": "Prover", "mnemonic": MNEMONIC, "liquid": true }),
+    );
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let check = env.ok(
+        "protocol_check_pset",
+        json!({ "wallet_id": id, "challenge": CHALLENGE }),
+    );
+    assert_keys(
+        "protocol_check_pset",
+        &check,
+        &["pset_base64", "loan_key", "fingerprint"],
+    );
+    assert!(check["loan_key"]
+        .as_str()
+        .unwrap()
+        .starts_with("[73c5da0a/2121h/1h/0h]tpub"));
+    assert_eq!(check["fingerprint"], json!("73c5da0a"));
+    let pset = check["pset_base64"].as_str().unwrap().to_string();
+
+    // What the review screen's own reading shows.
+    let d = env.ok(
+        "inspect_pset",
+        json!({ "wallet_id": id, "pset_base64": pset }),
+    );
+    assert_eq!(d["fee_sats"], json!(0));
+    assert_eq!(d["inputs"].as_array().unwrap().len(), 1);
+    assert_eq!(d["inputs"][0]["is_ours"], json!(true));
+    assert_eq!(d["inputs"][0]["amount_sats"], json!(0));
+    assert_eq!(d["inputs"][0]["script_type"], json!("p2wpkh"));
+    assert_eq!(d["inputs"][0]["signed_by"], json!([]));
+    assert_eq!(d["outputs"].as_array().unwrap().len(), 2);
+    assert_eq!(d["outputs"][1]["kind"], json!("fee"));
+    assert_eq!(d["has_unverified_outputs"], json!(false));
+
+    // Judged: the check of this challenge, and of no other.
+    let v = env.ok(
+        "protocol_is_check_pset",
+        json!({ "wallet_id": id, "challenge": CHALLENGE, "pset_base64": pset }),
+    );
+    assert_keys(
+        "protocol_is_check_pset",
+        &v,
+        &["is_check", "reason", "loan_key_fingerprint"],
+    );
+    assert_eq!(v["is_check"], json!(true), "{v}");
+    assert!(v["reason"].is_null());
+    assert_eq!(v["loan_key_fingerprint"], json!("73c5da0a"));
+
+    let other = env.ok(
+        "protocol_is_check_pset",
+        json!({ "wallet_id": id, "challenge": "another challenge", "pset_base64": pset }),
+    );
+    assert_eq!(other["is_check"], json!(false));
+    assert!(other["reason"]
+        .as_str()
+        .unwrap()
+        .contains("not a check PSET"));
+
+    // A real escrow spend is never a proof, whatever the challenge says.
+    let real = env.ok(
+        "protocol_is_check_pset",
+        json!({ "wallet_id": id, "challenge": CHALLENGE, "pset_base64": ESCROW_FIXTURE }),
+    );
+    assert_eq!(real["is_check"], json!(false));
+    assert!(real["reason"].as_str().unwrap().contains("worth something"));
+
+    // Garbage is a verdict too, not a crash.
+    let junk = env.ok(
+        "protocol_is_check_pset",
+        json!({ "wallet_id": id, "challenge": CHALLENGE, "pset_base64": "not base64!" }),
+    );
+    assert_eq!(junk["is_check"], json!(false));
+
+    // Signed through the ordinary route, exactly once, still the check.
+    let signed = env.ok("sign_pset", json!({ "wallet_id": id, "pset_base64": pset }));
+    let signed = signed.as_str().unwrap().to_string();
+    let after = env.ok(
+        "inspect_pset",
+        json!({ "wallet_id": id, "pset_base64": signed }),
+    );
+    assert_eq!(after["inputs"][0]["signed_by"], json!(["73c5da0a"]));
+    assert_eq!(after["sigs_have"], json!(1));
+    let v = env.ok(
+        "protocol_is_check_pset",
+        json!({ "wallet_id": id, "challenge": CHALLENGE, "pset_base64": signed }),
+    );
+    assert_eq!(v["is_check"], json!(true));
+    // And the site's verification, as the core implements it, accepts it.
+    let parsed = templar_core::LiquidWalletManager::pset_from_base64(&signed).unwrap();
+    templar_core::verify_check_signature(
+        &parsed,
+        CHALLENGE,
+        check["loan_key"].as_str().unwrap(),
+        &templar_core::LiquidNetwork::testnet(),
+    )
+    .unwrap();
+
+    // Signing it again adds nothing — the route says so.
+    let err = env.err(
+        "sign_pset",
+        json!({ "wallet_id": id, "pset_base64": signed }),
+    );
+    assert!(err.contains("No signature was added"), "{err}");
+
+    // An empty challenge builds nothing.
+    let err = env.err(
+        "protocol_check_pset",
+        json!({ "wallet_id": id, "challenge": "  " }),
+    );
+    assert!(err.contains("empty challenge"), "{err}");
+
+    // A watch-only wallet has no loan key to prove.
+    let (fp, account) = templar_core::account_xpub_bip84(MNEMONIC).unwrap();
+    let wo = env.ok(
+        "create_watch_only_wallet",
+        json!({
+            "name": "Watch",
+            "recv_desc": format!("wpkh([{fp}/84'/1'/0']{account}/0/*)"),
+            "change_desc": format!("wpkh([{fp}/84'/1'/0']{account}/1/*)"),
+        }),
+    );
+    let wo_id = wo["id"].as_str().unwrap().to_string();
+    let err = env.err(
+        "protocol_check_pset",
+        json!({ "wallet_id": wo_id, "challenge": CHALLENGE }),
+    );
+    assert!(err.contains("software wallet"), "{err}");
+    let v = env.ok(
+        "protocol_is_check_pset",
+        json!({ "wallet_id": wo_id, "challenge": CHALLENGE, "pset_base64": pset }),
+    );
+    assert_eq!(v["is_check"], json!(false));
+
+    // On regtest the testnet check is another chain's: refused there, and a
+    // regtest check is built with regtest's L-BTC.
+    env.ok("set_liquid_network", json!({ "network": "regtest" }));
+    let v = env.ok(
+        "protocol_is_check_pset",
+        json!({ "wallet_id": id, "challenge": CHALLENGE, "pset_base64": pset }),
+    );
+    assert_eq!(v["is_check"], json!(false));
+    assert!(v["reason"].as_str().unwrap().contains("L-BTC"), "{v}");
+    let regtest = env.ok(
+        "protocol_check_pset",
+        json!({ "wallet_id": id, "challenge": CHALLENGE }),
+    );
+    assert_ne!(regtest["pset_base64"], check["pset_base64"]);
+}
+
 #[test]
 fn inspect_pset_describes_a_protocol_escrow_spend() {
     let mut env = TestEnv::new();

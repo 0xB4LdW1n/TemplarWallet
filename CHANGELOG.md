@@ -32,6 +32,24 @@ any release may change anything.
 - Settings › Templar Protocol leads with a Loans shortcut; «How it works»
   is folded under an expander. The desktop dashboard's Liquid panel row now
   opens Loans.
+- **Proof of key** (contract §9). A v1.1 connect carries a `challenge`; the
+  wallet builds the check PSET from it and its loan key (one input on
+  `sha256("templar-proof" ‖ challenge)`, an explicit 0 L-BTC coin to the
+  key at `/0/0`, `OP_RETURN(challenge)`, fee 0 — it can never be broadcast),
+  signs it with the escrow key and sends it as `proof`, so reconnecting the
+  same wallet re-attaches its loans in one step and gets the portfolio token
+  back. A `templar://sign` request with action `proof` gets a dedicated
+  review: the challenge line verbatim, the site origin, the expiry and «This
+  signature never moves funds»; the engine recomputes the check and the
+  screen refuses anything that is not byte-for-byte that check for this
+  wallet's key. New FFI ops `protocol_check_pset` and
+  `protocol_is_check_pset`; templar-core gains `check_pset`,
+  `check_pset_shape` / `is_check_pset` and `verify_check_signature`.
+- A Jade-backed wallet can now connect: its BIP87 account
+  (`[fp/87h/1h/0h]tpub…`) is offered as the loan key, which the site
+  accepts. Proving the key through a Jade is not supported yet (the check
+  needs a zero-value input untested on the device); every proof route says
+  so and the site falls back to a signing request.
 
 ## [0.1.0] — 2026-09-24
 

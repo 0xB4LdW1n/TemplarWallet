@@ -69,7 +69,11 @@ pub use liquid::liquidex::{
 };
 pub use liquid::multisig::{BlindingKeySource, LiquidMultisigSetup};
 pub use liquid::network::{LiquidNetwork, REGTEST_DEFAULT_POLICY_ASSET, TESTNET_POLICY_ASSET};
-pub use liquid::protocol::{escrow_account_xpub, escrow_xpub_from_mnemonic, ESCROW_KEY_PATH};
+pub use liquid::protocol::{
+    check_pset, check_pset_shape, escrow_account_xpub, escrow_xpub_from_mnemonic, is_check_pset,
+    loan_key_at_zero, proof_fake_txid, verify_check_signature, ESCROW_KEY_PATH,
+    LOAN_KEY_PATH_BIP87, PROOF_PREVOUT_TAG,
+};
 pub use liquid::pset::{PsetDetails, PsetInputInfo, PsetOutputInfo, PsetRecipient};
 pub use liquid::wallet::{
     fetch_asset_metadata, fetch_asset_metadata_on, LiquidBalance, LiquidTx, LiquidWalletManager,

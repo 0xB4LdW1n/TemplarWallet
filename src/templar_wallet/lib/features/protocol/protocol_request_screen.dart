@@ -29,6 +29,7 @@ import '../settings/liquid_network_switch.dart';
 import '../vault/lock_action.dart';
 import '../wallet_picker/models/wallet_summary.dart';
 import 'models/protocol_link.dart';
+import 'models/protocol_proof.dart';
 import 'models/protocol_records.dart';
 import 'models/protocol_wallet_fit.dart';
 import 'protocol_confirm_gate.dart';
@@ -98,6 +99,11 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
   // Sign: the wallet's own reading of the PSET.
   PsetInspection? _inspection;
 
+  /// Sign, action `proof` only: whether the PSET is exactly the check of the
+  /// request's challenge for this wallet's key (§9.5). Anything else under
+  /// that action is refused before the gate is even offered.
+  ProtocolCheckVerdict? _proofVerdict;
+
   bool _busy = false;
   String? _nextUrl;
 
@@ -148,6 +154,7 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
       _request = null;
       _mismatch = null;
       _inspection = null;
+      _proofVerdict = null;
       _nextUrl = null;
       // A switch closed whatever was open; and a second link is a second
       // decision, not a continuation of the first.
@@ -363,32 +370,89 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
   }
 
   Future<void> _prepareSign(WalletSummary w) async {
-    final pset = _request!.pset!;
+    final req = _request!;
+    final pset = req.pset!;
     // The engine refuses a PSET carrying another network's assets here,
     // independently of what the site claimed in `network`.
     final inspection = await _bridge.inspectPset(w.id, pset);
+    final verdict = req.isProof ? await _judgeProof(w, req, pset) : null;
     if (!mounted) return;
     setState(() {
       _inspection = inspection;
+      _proofVerdict = verdict;
       _phase = _Phase.review;
     });
   }
 
+  /// §9.5: under action `proof`, nothing but the exact check PSET of the
+  /// request's own challenge for this wallet's loan key is signed. The
+  /// check is recomputed by the engine from the challenge text and the key —
+  /// the site's PSET is compared against it, never taken at its word.
+  Future<ProtocolCheckVerdict> _judgeProof(
+      WalletSummary w, ProtocolRequest req, String pset) async {
+    final challenge = req.challenge;
+    if (challenge == null || challenge.isEmpty) {
+      return const ProtocolCheckVerdict(
+        isCheck: false,
+        reason: 'The site sent a proof request without the challenge text it '
+            'is supposed to prove. Nothing can be checked, so nothing is signed.',
+      );
+    }
+    if (w.isHardwareWallet) {
+      return const ProtocolCheckVerdict(
+          isCheck: false, reason: kProtocolJadeProofUnsupported);
+    }
+    try {
+      return await _bridge.protocolIsCheckPset(w.id, challenge, pset);
+    } catch (e) {
+      return ProtocolCheckVerdict(
+          isCheck: false, reason: 'The proof could not be checked: ${_clean(e)}');
+    }
+  }
+
   // ── Answer ─────────────────────────────────────────────────────────────────
+
+  /// Whether this connect carries a proof: the site sent a challenge (v1.1)
+  /// and the wallet can sign the check — a Jade cannot yet, and the site
+  /// then falls back to a `proof` signing request when it needs one.
+  bool get _connectProves {
+    final c = _request?.challenge;
+    final w = _wallet;
+    return c != null && c.isNotEmpty && w != null && !w.isHardwareWallet;
+  }
 
   Future<void> _confirmConnect() async {
     final w = _wallet!;
     final req = _request!;
+    final proves = _connectProves;
     final ok = await showSpendPasswordGate(
       context,
       title: 'Share this wallet with ${req.site}?',
       confirmLabel: 'Share',
       message: 'Templar will send ${req.site} the watch-only descriptor of '
           '"${w.name}" (it can then see this wallet\'s Liquid balance and '
-          'history), its loan escrow key, and a receive address. No secret '
-          'leaves this computer.',
+          'history), its loan escrow key, and a receive address'
+          '${proves ? ', and will sign a proof of that key — a check that never moves funds — so the site recognises it again' : ''}. '
+          'No secret leaves this computer.',
     );
     if (!ok || !mounted) return;
+    // v1.1 (§9.3): the proof rides in the callback. Built by the engine from
+    // the site's challenge and this wallet's loan key, signed through the
+    // same route as any PSET naming the key. A refusal here is a refusal
+    // of the whole connect — the site would only ask for it again.
+    Map<String, dynamic>? proof;
+    if (proves) {
+      setState(() => _busy = true);
+      try {
+        final check = await _bridge.protocolCheckPset(w.id, req.challenge!);
+        final signed = await _bridge.signPset(w.id, check.psetBase64);
+        proof = {'kind': 'check-pset', 'pset': signed};
+      } catch (e) {
+        _fail(ProtocolLinkError('Could not sign the proof of key: ${_clean(e)}'));
+        return;
+      }
+      if (!mounted) return;
+    }
     final reply = await _post({
       'version': 1,
       'nonce': req.nonce,
@@ -398,6 +462,7 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
       'receive_address': _receiveAddress,
       'wallet_name': 'Templar — ${w.name}',
       'signer': w.isHardwareWallet ? 'jade' : 'software',
+      'proof': ?proof,
     });
     // Only once the site has taken it: a refused callback shared nothing.
     if (reply != null) {
@@ -479,13 +544,23 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
   Future<void> _confirmSign() async {
     final w = _wallet!;
     final req = _request!;
+    if (req.isProof && _proofVerdict?.isCheck != true) {
+      // The gate is disabled for this case; this is the belt to its braces.
+      _fail(ProtocolLinkError(_proofVerdict?.reason ??
+          'This is not the proof-of-key check of the request\'s challenge.'));
+      return;
+    }
     final ok = await showSpendPasswordGate(
       context,
       title: 'Sign for ${req.site}?',
-      message: 'Templar is about to sign this ${req.actionLabel.toLowerCase()} '
-          'with the key of "${w.name}" and send the signature to ${req.site}. '
-          'The site broadcasts once every party has signed; nothing is '
-          'broadcast from here.',
+      message: req.isProof
+          ? 'Templar is about to sign a proof that "${w.name}" holds its loan '
+              'key, and send it to ${req.site}. The signed check can never be '
+              'broadcast: it spends no coin and pays nobody. $kProtocolProofStatement.'
+          : 'Templar is about to sign this ${req.actionLabel.toLowerCase()} '
+              'with the key of "${w.name}" and send the signature to ${req.site}. '
+              'The site broadcasts once every party has signed; nothing is '
+              'broadcast from here.',
     );
     if (!ok) {
       await _record(req, ProtocolSignOutcome.refused);
@@ -735,10 +810,36 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
               const SizedBox(height: AppSpacing.lg),
               CodeBox(label: 'Liquid CT descriptor (watch-only)', value: _ctDescriptor ?? ''),
               const SizedBox(height: AppSpacing.lg),
-              CodeBox(label: 'Escrow key (m/2121\'/1\'/0\')', value: _escrowXpub ?? ''),
+              CodeBox(
+                label: w.isHardwareWallet
+                    ? 'Loan key (m/87\'/1\'/0\', read from the Jade)'
+                    : 'Escrow key (m/2121\'/1\'/0\')',
+                value: _escrowXpub ?? '',
+              ),
             ],
           ),
         ),
+        const SizedBox(height: AppSpacing.lg),
+        if (req.challenge != null) ...[
+          const SizedBox(height: AppSpacing.lg),
+          _ProofCard(
+            challenge: req.challenge!,
+            origin: _link?.origin ?? req.callback.origin,
+            expiresAt: req.expiresAtTime,
+            walletName: w.name,
+            keyFingerprint: protocolKeyFingerprint(_escrowXpub),
+            title: _connectProves
+                ? 'Proof of key, signed with the share'
+                : 'Proof of key: not from a Jade yet',
+            body: _connectProves
+                ? 'So that ${req.site} recognises this key again later, the wallet '
+                    'also signs a check built from the line below: one input that '
+                    'is no coin, 0 L-BTC, the line itself as the only output. It '
+                    'can never be broadcast. It proves the key; it moves nothing.'
+                : '$kProtocolJadeProofUnsupported The site may ask for the proof '
+                    'through a signing request instead.',
+          ),
+        ],
         const SizedBox(height: AppSpacing.lg),
         FormCard(
           title: 'Sent to',
@@ -760,8 +861,107 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
     );
   }
 
+  /// Action `proof` (§9.2 / §9.5): the dedicated review. The verdict leads;
+  /// the challenge, the origin and the expiry are shown as the site sent
+  /// them; the wallet's own reading sits underneath as evidence (not its
+  /// coin, 0, an OP_RETURN, fee 0); the gate opens only on a true check.
+  Widget _proofReview() {
+    final req = _request!;
+    final w = _wallet!;
+    final i = _inspection!;
+    final s = AppScheme.of(context);
+    final origin = _link?.origin ?? req.callback.origin;
+    final v = _proofVerdict ??
+        const ProtocolCheckVerdict(
+            isCheck: false, reason: 'The proof was not checked.');
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (!v.isCheck)
+          DangerBanner(
+            title: 'Refusing to sign this',
+            message: '${v.reason ?? 'This is not the check of the request\'s challenge.'} '
+                'Under a proof request Templar signs only the exact check it '
+                'recomputes from the challenge and its own key — nothing else, '
+                'whatever the site says it is.',
+          )
+        else
+          InfoBanner(
+            title: kProtocolProofStatement,
+            message: 'What you sign is a check that can never be broadcast: it '
+                'spends no coin, pays nobody and carries the line below. It '
+                'proves to $origin that "${w.name}" holds its loan key, so the '
+                'site can show you your loans again.',
+          ),
+        const SizedBox(height: AppSpacing.lg),
+        _ProofCard(
+          challenge: req.challenge ?? '',
+          origin: origin,
+          expiresAt: req.expiresAtTime,
+          walletName: w.name,
+          keyFingerprint: v.loanKeyFingerprint,
+          title: 'What you are signing',
+          body: v.isCheck
+              ? 'The engine rebuilt the check from this line and this wallet\'s '
+                  'loan key, and the site\'s PSET is that check, byte for byte.'
+              : null,
+        ),
+        const SizedBox(height: AppSpacing.lg),
+        LayoutBuilder(builder: (context, c) {
+          final wide = c.maxWidth >= 760;
+          final site = _SiteSummaryPanel(request: req);
+          final wallet = _WalletViewPanel(inspection: i, walletName: w.name);
+          if (wide) {
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(child: site),
+                const SizedBox(width: AppSpacing.lg),
+                Expanded(child: wallet),
+              ],
+            );
+          }
+          return Column(children: [site, const SizedBox(height: AppSpacing.lg), wallet]);
+        }),
+        const SizedBox(height: AppSpacing.lg),
+        SummaryCard(
+          title: 'Request',
+          rows: [
+            (label: 'Site', value: req.site, isMono: false),
+            (label: 'Action', value: req.actionLabel, isMono: false),
+            (label: 'Request id', value: req.id ?? '', isMono: true),
+            (label: 'Network', value: protocolNetworkLabel(req.network), isMono: false),
+            (label: 'Wallet', value: w.name, isMono: false),
+            (label: 'Callback', value: req.callback.toString(), isMono: true),
+            (label: 'Expires', value: req.expiresAtTime.toLocal().toString(), isMono: false),
+          ],
+        ),
+        const SizedBox(height: AppSpacing.xl),
+        if (_error != null) ...[
+          DangerBanner(message: _error!),
+          const SizedBox(height: AppSpacing.lg),
+        ],
+        Text(
+          'The signature is sent to ${req.site} only. Nothing is broadcast by this wallet, '
+          'and the check is not kept once this screen closes.',
+          style: AppTypography.caption.copyWith(color: s.inkSecondary),
+        ),
+        const SizedBox(height: AppSpacing.md),
+        ProtocolConfirmGate(
+          key: const Key('protocol-proof-gate'),
+          statement: 'I understand this signature proves my loan key to $origin and moves no funds.',
+          buttonLabel: 'Sign the proof for ${req.site}',
+          busy: _busy,
+          enabled: v.isCheck,
+          onConfirm: _confirmSign,
+        ),
+      ],
+    );
+  }
+
   Widget _signReview() {
     final req = _request!;
+    if (req.isProof) return _proofReview();
     final w = _wallet!;
     final i = _inspection!;
     final ours = i.ourInputs;
@@ -858,6 +1058,73 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
 }
 
 // ── Pieces ────────────────────────────────────────────────────────────────────
+
+/// The proof of key as the user must see it (§9.5): the statement, the
+/// site, the expiry, the wallet and its key, and the challenge line itself,
+/// verbatim — it is what gets hashed into the check.
+class _ProofCard extends StatelessWidget {
+  const _ProofCard({
+    required this.challenge,
+    required this.origin,
+    required this.expiresAt,
+    required this.walletName,
+    required this.keyFingerprint,
+    required this.title,
+    this.body,
+  });
+  final String challenge;
+  final String origin;
+  final DateTime expiresAt;
+  final String walletName;
+  final String keyFingerprint;
+  final String title;
+  final String? body;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = AppScheme.of(context);
+    final left = expiresAt.difference(DateTime.now().toUtc());
+    final expires = left.isNegative
+        ? 'expired'
+        : left.inMinutes >= 1
+            ? 'in ${left.inMinutes} min'
+            : 'in under a minute';
+    return FormCard(
+      title: title,
+      subtitle: body,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.verified_user_outlined, size: 18, color: s.liquid),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Text(
+                  '$kProtocolProofStatement.',
+                  key: const Key('protocol-proof-statement'),
+                  style: AppTypography.body.copyWith(color: s.ink, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.md),
+          KvRow(label: 'Site', value: origin, labelWidth: 96),
+          KvRow(
+            label: 'Expires',
+            value: '$expires · ${expiresAt.toLocal()}',
+            labelWidth: 96,
+          ),
+          KvRow(label: 'Wallet', value: walletName, labelWidth: 96),
+          if (keyFingerprint.isNotEmpty)
+            KvRow(label: 'Loan key', value: keyFingerprint, labelWidth: 96),
+          const SizedBox(height: AppSpacing.md),
+          CodeBox(label: 'Challenge, as the site sent it', value: challenge),
+        ],
+      ),
+    );
+  }
+}
 
 class _LockedCard extends StatelessWidget {
   const _LockedCard({required this.onUnlock});
@@ -969,7 +1236,7 @@ class _WalletChoice extends StatelessWidget {
     return FormCard(
       title: connect ? 'Which wallet should the site know?' : 'Which wallet signs?',
       subtitle: connect
-          ? 'A software wallet with Liquid enabled. Its escrow key is derived from the seed; devices are not supported for loans yet.'
+          ? 'A Liquid wallet: a software seed (its escrow key is derived from the seed) or a Jade (its BIP87 key, read from the device).'
           : 'A Liquid wallet whose key took part in this loan.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1012,7 +1279,7 @@ class _WalletChoice extends StatelessWidget {
             const SizedBox(height: AppSpacing.md),
             Text(
               'Not usable here: ${others.map((w) => w.name).join(', ')} '
-              '(${connect ? 'no Liquid side, view-only, multisig or device wallets' : 'no Liquid side, view-only or non-Jade device wallets'}).',
+              '(no Liquid side, view-only, multisig or non-Jade device wallets).',
               style: AppTypography.caption.copyWith(color: s.inkFaint),
             ),
           ],

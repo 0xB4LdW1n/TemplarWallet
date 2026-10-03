@@ -11,25 +11,45 @@ use templar_core::{LiquidBackend, LiquidNetwork, REGTEST_DEFAULT_POLICY_ASSET};
 
 use crate::state::AppFfiState;
 use crate::types::{
-    IssueResultDto, LiquidNetworkDto, PsetInputDto, PsetInspectionDto, PsetOutputDto,
-    PsetRecipientDto, TxIoDto, TxOutputSpec, TxPreviewDto,
+    IssueResultDto, LiquidNetworkDto, ProtocolCheckDto, ProtocolCheckVerdictDto, PsetInputDto,
+    PsetInspectionDto, PsetOutputDto, PsetRecipientDto, TxIoDto, TxOutputSpec, TxPreviewDto,
 };
 
-/// The wallet's Templar Protocol escrow account key, `[fingerprint/2121h/1h/0h]tpub…`
-/// — what the `templar://connect` callback sends as `escrow_xpub`.
+/// The clear message every proof route gives a Jade-backed wallet until the
+/// check has been exercised on a device: Jade signs confidential inputs, and
+/// the zero-value check carries an explicit one.
+pub const JADE_PROOF_UNSUPPORTED: &str =
+    "Proof of key through a Jade is not supported yet: the check needs a zero-value input the \
+     device has not been tested with. Connect a software wallet, or sign the proof with one.";
+
+/// The wallet's Templar Protocol loan key in keyorigin form — what the
+/// `templar://connect` callback sends as `escrow_xpub`.
 ///
-/// Software wallets only: the key is a hardened account below the seed, and
-/// a device (Jade) would have to derive and export it itself. Multisig and
-/// policy wallets have no single seed to derive it from.
+/// A software wallet derives its escrow account `[fp/2121h/1h/0h]tpub…`
+/// from the seed. A Jade exports its BIP87 account `[fp/87h/1h/0h]tpub…`
+/// instead (the same key its Liquid multisigs enrol), which the site
+/// accepts as a loan key too; the device must be plugged in and unlocked.
+/// Multisig and policy wallets have no single key to offer.
 pub fn protocol_escrow_xpub(state: &AppFfiState, wallet_id: &str) -> Result<String, String> {
     let entry = state.registry.find(wallet_id).ok_or("Wallet not found")?;
     match &entry.profile {
         WalletProfile::Software { mnemonic } => {
             templar_core::escrow_xpub_from_mnemonic(mnemonic).map_err(|e| e.to_string())
         }
+        #[cfg(feature = "hardware")]
+        WalletProfile::HardwareWallet {
+            device_model,
+            device_fingerprint,
+            ..
+        } if templar_core::is_jade_model(device_model) => {
+            crate::handlers::hw::get_jade_liquid_cosigner_xpub(
+                &state.liquid_network,
+                Some(device_fingerprint),
+            )
+        }
         WalletProfile::HardwareWallet { .. } => Err(
-            "This wallet's keys live on a device. Templar Protocol escrow keys from a Jade are \
-             not supported yet — connect a software wallet."
+            "This wallet's keys live on a device that cannot offer a Liquid loan key. Only a \
+             Jade can take part in Templar Protocol loans; otherwise connect a software wallet."
                 .into(),
         ),
         WalletProfile::Multisig { .. } | WalletProfile::Policy { .. } => Err(
@@ -38,6 +58,84 @@ pub fn protocol_escrow_xpub(state: &AppFfiState, wallet_id: &str) -> Result<Stri
                 .into(),
         ),
     }
+}
+
+/// The loan key a proof is built or judged with, from the registry alone:
+/// a software wallet's escrow account. A Jade would have to be asked for
+/// its 87h key on every call and cannot sign the check yet, so every proof
+/// route gives it [`JADE_PROOF_UNSUPPORTED`] instead.
+fn protocol_proof_key(state: &AppFfiState, wallet_id: &str) -> Result<String, String> {
+    let entry = state.registry.find(wallet_id).ok_or("Wallet not found")?;
+    match &entry.profile {
+        WalletProfile::Software { mnemonic } => {
+            templar_core::escrow_xpub_from_mnemonic(mnemonic).map_err(|e| e.to_string())
+        }
+        WalletProfile::HardwareWallet { .. } => Err(JADE_PROOF_UNSUPPORTED.into()),
+        WalletProfile::Multisig { .. } | WalletProfile::Policy { .. } => {
+            Err("Only a single-seed software wallet can prove a Templar Protocol loan key.".into())
+        }
+    }
+}
+
+/// Builds the unsigned check PSET of connector-protocol.md §9.1 for this
+/// wallet's loan key and the site's `challenge` — what a v1.1 connect signs
+/// (with `sign_pset`, like any PSET naming the key) and sends as `proof`.
+pub fn protocol_check_pset(
+    state: &AppFfiState,
+    wallet_id: &str,
+    challenge: &str,
+) -> Result<ProtocolCheckDto, String> {
+    let loan_key = protocol_proof_key(state, wallet_id)?;
+    let pset = templar_core::check_pset(challenge, &loan_key, &state.liquid_network)
+        .map_err(|e| e.to_string())?;
+    let (_, fingerprint, _) =
+        templar_core::loan_key_at_zero(&loan_key).map_err(|e| e.to_string())?;
+    Ok(ProtocolCheckDto {
+        pset_base64: LiquidWalletManager::pset_to_base64(&pset).map_err(|e| e.to_string())?,
+        loan_key,
+        fingerprint: fingerprint.to_string().to_lowercase(),
+    })
+}
+
+/// §9.5: whether `pset_base64` is exactly the check of `challenge` for this
+/// wallet's loan key on the active network — recomputed here, never taken
+/// from the site. A false verdict carries the reason the review shows.
+pub fn protocol_is_check_pset(
+    state: &AppFfiState,
+    wallet_id: &str,
+    challenge: &str,
+    pset_base64: &str,
+) -> Result<ProtocolCheckVerdictDto, String> {
+    let loan_key = match protocol_proof_key(state, wallet_id) {
+        Ok(k) => k,
+        Err(reason) => {
+            return Ok(ProtocolCheckVerdictDto {
+                is_check: false,
+                reason: Some(reason),
+                loan_key_fingerprint: String::new(),
+            })
+        }
+    };
+    let (_, fingerprint, _) =
+        templar_core::loan_key_at_zero(&loan_key).map_err(|e| e.to_string())?;
+    let fingerprint = fingerprint.to_string().to_lowercase();
+    let pset = match LiquidWalletManager::pset_from_base64(pset_base64) {
+        Ok(p) => p,
+        Err(e) => {
+            return Ok(ProtocolCheckVerdictDto {
+                is_check: false,
+                reason: Some(format!("The request's PSET cannot be read: {e}")),
+                loan_key_fingerprint: fingerprint,
+            })
+        }
+    };
+    let verdict =
+        templar_core::check_pset_shape(&pset, challenge, &loan_key, &state.liquid_network);
+    Ok(ProtocolCheckVerdictDto {
+        is_check: verdict.is_ok(),
+        reason: verdict.err().map(|e| e.to_string()),
+        loan_key_fingerprint: fingerprint,
+    })
 }
 
 /// The active Liquid network and chain backend, for the settings screen and

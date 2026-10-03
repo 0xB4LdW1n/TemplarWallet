@@ -5,6 +5,7 @@ import 'wallet_bridge.dart';
 import '../features/create_wallet/models/hw_device.dart';
 import '../features/create_wallet/models/hw_import_result.dart';
 import '../features/create_wallet/models/native_device.dart';
+import '../features/protocol/models/protocol_proof.dart';
 import '../features/psbt/models/psbt_inspection.dart';
 import '../features/psbt/models/pset_inspection.dart';
 import '../features/wallet_picker/models/wallet_summary.dart';
@@ -1443,6 +1444,33 @@ class MockWalletBridge implements WalletBridge {
   Future<String> getProtocolEscrowXpub(String walletId) async {
     await Future.delayed(const Duration(milliseconds: 150));
     return '[deadbeef/2121h/1h/0h]tpubDCMockEscrowKey1111111111111111111111111111111111111111111111111111111111111111111111111111111111111';
+  }
+
+  @override
+  Future<ProtocolCheck> protocolCheckPset(String walletId, String challenge) async {
+    await Future.delayed(const Duration(milliseconds: 150));
+    return ProtocolCheck(
+      psetBase64: 'cHNldP8BAgQCAAAAMOCK${base64Encode(utf8.encode(challenge))}',
+      loanKey: await getProtocolEscrowXpub(walletId),
+      fingerprint: 'deadbeef',
+    );
+  }
+
+  @override
+  Future<ProtocolCheckVerdict> protocolIsCheckPset(
+      String walletId, String challenge, String psetBase64) async {
+    await Future.delayed(const Duration(milliseconds: 150));
+    // The mock has no key to recompute with: a PSET it built itself for the
+    // same challenge is the check, anything else is not.
+    final expected = (await protocolCheckPset(walletId, challenge)).psetBase64;
+    return psetBase64.trim() == expected
+        ? const ProtocolCheckVerdict(isCheck: true, loanKeyFingerprint: 'deadbeef')
+        : const ProtocolCheckVerdict(
+            isCheck: false,
+            reason: 'not a check PSET: the mock bridge recognises only the '
+                'check it built for this challenge',
+            loanKeyFingerprint: 'deadbeef',
+          );
   }
 
   @override

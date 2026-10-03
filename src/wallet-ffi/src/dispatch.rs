@@ -19,10 +19,11 @@ use crate::types::{
     CreateWatchOnlyParams, DeleteWalletParams, DeriveCosignerXpubParams,
     DeriveLiquidDescriptorParams, GenerateAddressParams, GenerateMnemonicParams, InspectPsbtParams,
     IssueAssetParams, ListActivityParams, ListUtxosParams, OpenWalletParams, PreviewTxParams,
-    PsetParams, ReissueAssetParams, RenameWalletParams, ReregisterAssetParams, SendTxParams,
-    SetLiquidNetworkParams, SetUtxosFrozenParams, SignPsbtParams, SyncOutcomeDto, TxOutputSpec,
-    UrDecodePartsParams, UrPsbtEncodeParams, UrPsetEncodeParams, ValidateCosignerKeyParams,
-    VaultKeyParams, VaultPassphraseParams, VerifyBackupParams, WalletIdParams,
+    ProtocolCheckParams, ProtocolIsCheckParams, PsetParams, ReissueAssetParams, RenameWalletParams,
+    ReregisterAssetParams, SendTxParams, SetLiquidNetworkParams, SetUtxosFrozenParams,
+    SignPsbtParams, SyncOutcomeDto, TxOutputSpec, UrDecodePartsParams, UrPsbtEncodeParams,
+    UrPsetEncodeParams, ValidateCosignerKeyParams, VaultKeyParams, VaultPassphraseParams,
+    VerifyBackupParams, WalletIdParams,
 };
 #[cfg(feature = "hardware")]
 use crate::types::{
@@ -425,6 +426,24 @@ fn try_dispatch(state: &mut AppFfiState, method: &str, params: &Value) -> Result
             let p: WalletIdParams =
                 serde_json::from_value(params.clone()).map_err(|e| e.to_string())?;
             liquid::protocol_escrow_xpub(state, &p.wallet_id).map(Value::String)
+        }
+
+        // Proof of key (connector-protocol.md §9): build the check for a
+        // connect, judge the one a `proof` signing request carries. Neither
+        // needs the wallet open — the key comes from the seed and the shape
+        // from the challenge; signing goes through `sign_pset` as usual.
+        "protocol_check_pset" => {
+            let p: ProtocolCheckParams =
+                serde_json::from_value(params.clone()).map_err(|e| e.to_string())?;
+            liquid::protocol_check_pset(state, &p.wallet_id, &p.challenge)
+                .map(|v| serde_json::to_value(v).unwrap())
+        }
+
+        "protocol_is_check_pset" => {
+            let p: ProtocolIsCheckParams =
+                serde_json::from_value(params.clone()).map_err(|e| e.to_string())?;
+            liquid::protocol_is_check_pset(state, &p.wallet_id, &p.challenge, &p.pset_base64)
+                .map(|v| serde_json::to_value(v).unwrap())
         }
 
         "inspect_pset" => {

@@ -416,8 +416,8 @@ class _ProtocolSectionState extends State<ProtocolSection> {
           'picking.',
       child: usable.isEmpty
           ? Text(
-              'No wallet qualifies yet: Templar Protocol needs a software wallet with '
-              'Liquid enabled.',
+              'No wallet qualifies yet: Templar Protocol needs a software wallet or '
+              'a Jade with Liquid enabled.',
               style: AppTypography.caption.copyWith(color: s.inkSecondary),
             )
           : Column(
@@ -591,7 +591,7 @@ class _HistoryRow extends StatelessWidget {
     };
     final title = [
       if (record.loanRef.isNotEmpty) record.loanRef,
-      if (record.action.isNotEmpty) _actionLabel(record.action),
+      if (record.action.isNotEmpty) protocolActionLabel(record.action),
     ].join(' · ');
 
     return Row(
@@ -620,16 +620,6 @@ class _HistoryRow extends StatelessWidget {
       ],
     );
   }
-
-  static String _actionLabel(String action) => switch (action) {
-        'origination' => 'Loan origination',
-        'repayment' => 'Repayment',
-        'installment' => 'Installment',
-        'default' => 'Default settlement',
-        'liquidation' => 'Liquidation',
-        'swap' => 'Swap',
-        final other => other,
-      };
 }
 
 class _PreferenceRow extends StatelessWidget {

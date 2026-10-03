@@ -16,6 +16,7 @@ import '../features/send/models/tx_preview.dart';
 import '../features/liquid/models/issue_result.dart';
 import '../features/swap/models/swap_offer.dart';
 import '../features/peg/models/peg_models.dart';
+import '../features/protocol/models/protocol_proof.dart';
 import '../features/psbt/models/psbt_inspection.dart';
 import '../features/psbt/models/pset_inspection.dart';
 
@@ -518,10 +519,21 @@ abstract class WalletBridge {
 
   // ── Templar Protocol ─────────────────────────────────────────────
 
-  /// The wallet's loan-escrow account key, `[fingerprint/2121h/1h/0h]tpub…`
-  /// — what a `templar://connect` answer carries as `escrow_xpub`. Software
-  /// wallets only.
+  /// The wallet's loan key in keyorigin form — what a `templar://connect`
+  /// answer carries as `escrow_xpub`: `[fp/2121h/1h/0h]tpub…` from a
+  /// software seed, `[fp/87h/1h/0h]tpub…` from a Jade (plugged in).
   Future<String> getProtocolEscrowXpub(String walletId);
+
+  /// The unsigned proof-of-key check (connector-protocol.md §9.1) for this
+  /// wallet's loan key and a site's challenge text. Signed with [signPset]
+  /// like any PSET naming the key. Software wallets only.
+  Future<ProtocolCheck> protocolCheckPset(String walletId, String challenge);
+
+  /// Whether [psetBase64] is exactly the check of [challenge] for this
+  /// wallet's loan key on the active network (§9.5) — recomputed by the
+  /// engine, never trusted from the site.
+  Future<ProtocolCheckVerdict> protocolIsCheckPset(
+      String walletId, String challenge, String psetBase64);
 }
 
 /// Result of [WalletBridge.getLiquidNetwork] / [WalletBridge.setLiquidNetwork].

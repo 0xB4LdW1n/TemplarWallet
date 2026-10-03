@@ -117,6 +117,7 @@ class ProtocolRequest {
     this.pset,
     this.escrow,
     this.policyAsset,
+    this.challenge,
   });
 
   final int version;
@@ -144,12 +145,23 @@ class ProtocolRequest {
   // Sign requests only.
   final String? id;
 
-  /// `origination` | `repayment` | `installment` | `default` | `liquidation` | `swap`.
+  /// `origination` | `repayment` | `installment` | `default` | `liquidation` |
+  /// `swap` | `proof`.
   final String? action;
   final String? loanRef;
   final ProtocolSummary? summary;
   final String? pset;
   final ProtocolEscrow? escrow;
+
+  /// The proof-of-key challenge (connector-protocol.md §9.1): `Templar
+  /// Protocol · access · origin · nonce=… · expires=… · this signature
+  /// never moves funds`. On a connect request (v1.1) the wallet signs the
+  /// check it builds from this; on a `proof` signing request the wallet
+  /// recomputes the check from it and refuses anything else.
+  final String? challenge;
+
+  /// A `templar://sign` request that proves the key and moves nothing.
+  bool get isProof => action == 'proof';
 
   /// Decodes the JSON, or throws [ProtocolLinkError] naming the missing field.
   static ProtocolRequest fromJson(Map<String, dynamic> j) {
@@ -212,6 +224,12 @@ class ProtocolRequest {
       pset: (j['pset'] as String?)?.trim(),
       escrow: escrow,
       policyAsset: _policyAsset(j['policy_asset']),
+      // Kept verbatim: it is what gets hashed into the check, and what the
+      // screen shows. Trimming only the ends would already alter it, so a
+      // blank one is dropped and anything else is left exactly as sent.
+      challenge: (j['challenge'] is String && (j['challenge'] as String).trim().isNotEmpty)
+          ? j['challenge'] as String
+          : null,
     );
   }
 
@@ -225,17 +243,22 @@ class ProtocolRequest {
       DateTime.fromMillisecondsSinceEpoch(expiresAt * 1000, isUtc: true);
 
   /// Human label for the sign action.
-  String get actionLabel => switch (action) {
-        'origination' => 'Loan origination',
-        'repayment' => 'Repayment',
-        'installment' => 'Installment',
-        'default' => 'Default settlement',
-        'liquidation' => 'Liquidation',
-        'swap' => 'Swap',
-        null => 'Signing request',
-        final other => other,
-      };
+  String get actionLabel => protocolActionLabel(action ?? '');
 }
+
+/// `origination` → `Loan origination`: the one vocabulary for a sign action,
+/// on the review screen, in the history and on a loan card.
+String protocolActionLabel(String action) => switch (action) {
+      'origination' => 'Loan origination',
+      'repayment' => 'Repayment',
+      'installment' => 'Installment',
+      'default' => 'Default settlement',
+      'liquidation' => 'Liquidation',
+      'swap' => 'Swap',
+      'proof' => 'Proof of key',
+      '' => 'Signing request',
+      final other => other,
+    };
 
 /// A refusal the user can read. Every check below produces one.
 class ProtocolLinkError implements Exception {

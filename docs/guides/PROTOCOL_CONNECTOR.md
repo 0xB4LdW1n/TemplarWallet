@@ -10,8 +10,9 @@ the wallet side of it.
 | Step | Where | What |
 |---|---|---|
 | Liquid network | Settings › Templar Protocol (and Network & Sync) | `testnet` (public) or `regtest` (a local `elementsd`, what the Templar Protocol runs for development). The wallet refuses any request whose `network` differs — and offers the switch on the spot (see *When the networks disagree*). |
-| `templar://connect` | opened from the site's "Connect Templar Wallet" link | Fetches the request, checks version / nonce / origin / transport / expiry, lets the user pick a **software** Liquid wallet, shows the watch-only CT descriptor, the escrow key `[fp/2121h/1h/0h]tpub…` and a receive address, and POSTs them after the app password. |
+| `templar://connect` | opened from the site's "Connect Templar Wallet" link | Fetches the request, checks version / nonce / origin / transport / expiry, lets the user pick a Liquid wallet (a software seed, or a Jade), shows the watch-only CT descriptor, the loan key (`[fp/2121h/1h/0h]tpub…` from a seed, `[fp/87h/1h/0h]tpub…` from a Jade) and a receive address, and POSTs them after the app password. When the site sent a `challenge` (v1.1) a software wallet also signs the **proof of key** (below) and sends it as `proof`; the answer's `portfolio` object is kept for the Loans page. |
 | `templar://sign` | opened from a loan page | Fetches the request, shows the site's summary **next to** the wallet's own reading of the PSET (`inspect_pset`: which inputs ask for our key, which outputs are ours / an escrow / external, fee, network), requires the checkbox + app password, signs with `sign_pset` (or `sign_pset_hw` on a Jade) and POSTs the signed PSET. Never broadcasts, never stores the PSET. |
+| `templar://sign` with `action: "proof"` | opened from the site's check page (a 0.1.0-style reconnect, «Ritrova», «Un altro wallet») | The strict review of contract §9.5: the engine rebuilds the check PSET from the request's `challenge` and this wallet's loan key (`protocol_is_check_pset`) and the screen **refuses anything else** — a real-looking prevout, a coin worth anything, another challenge, another key, an extra output, a non-zero fee, another chain's L-BTC — naming the reason. It shows the challenge line verbatim, the site origin, the expiry and «This signature never moves funds»; the wallet's own reading (not my coin, 0, OP_RETURN, fee 0) sits underneath. Then it signs through the ordinary route. |
 
 | Loans (`/loans`) | beside the Dashboard; a carousel tab on a phone; the Liquid panel's row on the desktop dashboard | The wallet's loans as the connected site reports them (`GET /connector/portfolio`, §7, with the bearer token the connect answer handed back): one card per loan — reference, role, state, the site's «what happens now», the term as a bar with «≈ N d/h left» and the due estimate, owed / principal / collateral / interest / Templar fee — then the wallet's own offers and the closed loans under an expander. **Sign now** feeds the loan's `templar://sign` link to the app's own link handler (no browser round-trip); **Open on Templar Protocol** asks `POST /connector/open` (bearer token, `{"to": "/loans/<id>"}`, or `/` from the header) for a one-time link and opens it in the system browser, which lands already inside the wallet's session (§8) — the token never goes in a URL, the link is single use and dies in two minutes, a link to another host is refused; **Refresh** asks again. Pulled on open, on Refresh and after every signature answered for that site. `401` drops the token and the page says «Reconnect to see your loans»; `429` and a network failure keep the last answer on screen with the reason. Nothing is persisted but the token. |
 
@@ -33,7 +34,54 @@ and a plain `sign_pset` finds it by fingerprint, so no descriptor import is
 needed to sign a loan.
 
 FFI methods: `get_protocol_escrow_xpub {wallet_id}`, `inspect_pset` (now with
-`network`, `inputs[]`, `outputs[]`), `sign_pset` / `sign_pset_hw`.
+`network`, `inputs[]`, `outputs[]`), `sign_pset` / `sign_pset_hw`,
+`protocol_check_pset {wallet_id, challenge}` → `{pset_base64, loan_key,
+fingerprint}` and `protocol_is_check_pset {wallet_id, challenge, pset_base64}`
+→ `{is_check, reason, loan_key_fingerprint}`.
+
+## Proof of key
+
+The site identifies a wallet by its loan key and lets it back in — to its
+loans, from a new browser — by a signature on the **check PSET** of contract
+§9.1, deterministic from the challenge text and the key:
+
+```
+pk        = K/0/0
+fake_txid = sha256("templar-proof" ‖ challenge)
+input 0   prevout (fake_txid, 0), sequence 0xffffffff, SIGHASH_ALL,
+          witness_utxo = explicit 0 L-BTC to P2WPKH(pk), bip32_derivation [fp/…/0/0]
+output 0  OP_RETURN(challenge), explicit 0, policy asset
+output 1  fee, explicit 0
+locktime 0, PSET v2
+```
+
+It can never be broadcast (the prevout does not exist, value 0, fee 0), and
+the sighash commits to the challenge — origin, single-use nonce, expiry — so
+one proof is good for one site and one challenge. `templar-core` builds it
+(`check_pset`), recognises it (`check_pset_shape` / `is_check_pset`, every
+refusal with its reason) and carries the site's own verification
+(`verify_check_signature`) so the tests prove what a site will accept. The
+challenge is kept verbatim from the JSON: it is what gets hashed.
+
+Two paths:
+
+- **v1.1 connect** (§9.3): the connect JSON carries `challenge`; after the
+  password gate the wallet builds the check, signs it with `sign_pset` like
+  any PSET naming its key, and sends `"proof": {"kind": "check-pset",
+  "pset": …}`. With a valid proof the site re-attaches the wallet's loans in
+  one step and hands back the `portfolio` token.
+- **`templar://sign` with action `proof`** (§9.2, what a 0.1.0 wallet
+  already signs, and what a Jade is sent to): the strict review above.
+
+**Jade.** A Jade-backed wallet connects with its BIP87 account
+(`keyorigin_xpub(Bip87)`, the key its Liquid multisigs enrol), which the site
+accepts as a loan key. Proving the key through the device is **not supported
+yet**: the check carries an explicit zero-value input, and Jade's signing of
+such an input has not been exercised on hardware. Every proof route — the
+connect's proof card, the `proof` review, `protocol_check_pset` and
+`protocol_is_check_pset` — says so in the same sentence and points to a
+software wallet; the site, seeing no proof in the callback, falls back to a
+signing request when it needs one.
 
 ## When the networks disagree
 
@@ -147,8 +195,9 @@ opens through `templar://sign`.
 
 ## Limits (v1)
 
-- Connect needs a software wallet: a device (Jade) cannot yet export the
-  `2121'` escrow key. Signing accepts software wallets and a Jade.
+- Connect takes a software wallet or a Jade (BIP87 loan key). Signing a
+  loan step accepts both; signing the proof of key needs a software wallet
+  for now (see *Proof of key*).
 - The site's summary is free text; the wallet shows it beside its own
   reading of the PSET and asks the user to compare — it cannot reconcile the
   two arithmetically.
