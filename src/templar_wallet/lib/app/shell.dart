@@ -297,11 +297,11 @@ class _MobileShellState extends State<MobileShell> {
   }
 }
 
-/// The carousel entries: the five places a wallet is *browsed* from. The
+/// The carousel entries: the six places a wallet is *browsed* from. The
 /// bar used to carry ten; Send and Receive now live on the Dashboard hero
 /// (where the balance they act on is), Wallet Info sits inside Settings,
-/// and LiquiDEX and Peg share the Liquid slot as tabs. Only the Liquid slot
-/// is gated — a Bitcoin-only wallet has nothing to put behind it.
+/// and LiquiDEX and Peg share the Liquid slot as tabs. Loans and the Liquid
+/// slot are gated — a Bitcoin-only wallet has nothing to put behind them.
 List<CarouselNavItem> mobileNavItems({required bool liquid}) {
   return [
     const CarouselNavItem(
@@ -311,6 +311,14 @@ List<CarouselNavItem> mobileNavItems({required bool liquid}) {
       icon: Icons.home_outlined,
       activeIcon: Icons.home,
     ),
+    if (liquid)
+      const CarouselNavItem(
+        id: 'loans',
+        label: 'Loans',
+        route: AppRoutes.loans,
+        icon: Icons.handshake_outlined,
+        activeIcon: Icons.handshake,
+      ),
     const CarouselNavItem(
       id: 'history',
       label: 'Activity',
@@ -995,6 +1003,16 @@ class _Sidebar extends StatelessWidget {
                 Icons.home_outlined,
                 Icons.home,
               ),
+              // Loans sit beside the Dashboard, not under Liquid: they are
+              // what the wallet is for in the protocol, and a site's loan
+              // state is read here first.
+              if (showLiquid)
+                _item(
+                  AppRoutes.loans,
+                  'Loans',
+                  Icons.handshake_outlined,
+                  Icons.handshake,
+                ),
               if (showSend)
                 _item(AppRoutes.send, 'Send', Icons.send_outlined, Icons.send),
               _item(

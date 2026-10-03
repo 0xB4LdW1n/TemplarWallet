@@ -56,6 +56,8 @@ class ProtocolConnectedSite {
     this.escrowFingerprint = '',
     this.receiveAddress = '',
     this.sharedDescriptor = true,
+    this.portfolioUrl,
+    this.portfolioToken,
   });
 
   /// The site's own name, e.g. `Templar Protocol demo`.
@@ -81,8 +83,43 @@ class ProtocolConnectedSite {
   /// v1; the flag keeps the row honest if that ever changes).
   final bool sharedDescriptor;
 
+  /// `GET /connector/portfolio` of the site (connector-protocol.md §7),
+  /// handed back by the connect callback since v1.1. Null for a site
+  /// connected by Templar 0.1.0, which has no loans view to feed.
+  final String? portfolioUrl;
+
+  /// The bearer token that reads [portfolioUrl]: an opaque 32-byte secret
+  /// bound to this wallet's row on the site, which keeps only its hash. It
+  /// reads the loans and mints one-time browser links; it signs nothing and
+  /// moves nothing. Never logged, never shown.
+  final String? portfolioToken;
+
+  /// Whether the Loans screen can ask this site for the wallet's loans.
+  bool get hasPortfolio =>
+      (portfolioUrl ?? '').isNotEmpty && (portfolioToken ?? '').isNotEmpty;
+
   /// One record per site and wallet: reconnecting the same pair replaces it.
   String get key => '$origin|$walletId';
+
+  ProtocolConnectedSite copyWith({
+    String? portfolioUrl,
+    String? portfolioToken,
+    bool clearPortfolio = false,
+  }) =>
+      ProtocolConnectedSite(
+        site: site,
+        origin: origin,
+        network: network,
+        walletId: walletId,
+        walletName: walletName,
+        connectedAt: connectedAt,
+        escrowFingerprint: escrowFingerprint,
+        receiveAddress: receiveAddress,
+        sharedDescriptor: sharedDescriptor,
+        portfolioUrl: clearPortfolio ? null : (portfolioUrl ?? this.portfolioUrl),
+        portfolioToken:
+            clearPortfolio ? null : (portfolioToken ?? this.portfolioToken),
+      );
 
   Map<String, dynamic> toJson() => {
         'site': site,
@@ -94,6 +131,8 @@ class ProtocolConnectedSite {
         'escrow_fingerprint': escrowFingerprint,
         'receive_address': receiveAddress,
         'shared_descriptor': sharedDescriptor,
+        if (hasPortfolio) 'portfolio_url': portfolioUrl,
+        if (hasPortfolio) 'portfolio_token': portfolioToken,
       };
 
   static ProtocolConnectedSite? fromJson(Map<String, dynamic> j) {
@@ -112,8 +151,30 @@ class ProtocolConnectedSite {
       escrowFingerprint: (j['escrow_fingerprint'] as String?)?.trim() ?? '',
       receiveAddress: (j['receive_address'] as String?)?.trim() ?? '',
       sharedDescriptor: j['shared_descriptor'] as bool? ?? true,
+      // Absent on records written before v1.1: the site must be connected
+      // again to get a token, and the Loans screen says so.
+      portfolioUrl: _nonEmpty(j['portfolio_url']),
+      portfolioToken: _nonEmpty(j['portfolio_token']),
     );
   }
+
+  /// The `portfolio` object of a connect answer (§3 / §7), or null when the
+  /// site sent none or sent one without both halves.
+  static ({String url, String token})? portfolioFromReply(Object? portfolio) {
+    if (portfolio is! Map) return null;
+    final url = _nonEmpty(portfolio['url']);
+    final token = _nonEmpty(portfolio['token']);
+    if (url == null || token == null) return null;
+    final uri = Uri.tryParse(url);
+    if (uri == null || !uri.hasScheme || uri.host.isEmpty) return null;
+    return (url: url, token: token);
+  }
+}
+
+String? _nonEmpty(Object? v) {
+  if (v is! String) return null;
+  final s = v.trim();
+  return s.isEmpty ? null : s;
 }
 
 /// One signing request, after the fact.

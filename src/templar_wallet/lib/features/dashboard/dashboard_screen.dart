@@ -2290,21 +2290,23 @@ class _ChainPanel extends StatelessWidget {
                 ),
               ),
               // Templar Protocol — Liquid only. A row, not a button: it goes
-              // somewhere, like the rows underneath it.
+              // somewhere, like the rows underneath it — to the Loans page,
+              // which is where the protocol's state is read; the settings
+              // are one tap further from there.
               if (showProtocol) ...[
                 Divider(height: 1, color: s.edge),
                 HoverRow(
-                  onTap: () => context.go(AppRoutes.settingsProtocol),
+                  onTap: () => context.go(AppRoutes.loans),
                   child: Padding(
                     padding: EdgeInsets.symmetric(
                         horizontal: gutter, vertical: AppSpacing.sm),
                     child: Row(
                       children: [
                         ListIconTile(
-                            icon: Icons.link_rounded, tint: rail, size: 28),
+                            icon: Icons.handshake_outlined, tint: rail, size: 28),
                         const SizedBox(width: kListGap),
                         Expanded(
-                          child: Text('Templar Protocol',
+                          child: Text('Loans · Templar Protocol',
                               style: AppTypography.body.copyWith(color: s.ink)),
                         ),
                         Icon(Icons.chevron_right, size: 18, color: s.inkFaint),

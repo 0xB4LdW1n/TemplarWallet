@@ -22,10 +22,17 @@ void main() {
       expect(ids, ['dashboard', 'history', 'utxos', 'settings']);
     });
 
-    test('a Liquid wallet adds the Liquid hub and nothing else', () {
+    test('a Liquid wallet adds Loans beside the Dashboard and the Liquid hub',
+        () {
       final ids = mobileNavItems(liquid: true).map((i) => i.id).toList();
-      expect(ids, ['dashboard', 'history', 'utxos', 'liquid', 'settings']);
+      expect(ids, ['dashboard', 'loans', 'history', 'utxos', 'liquid', 'settings']);
     });
+  });
+
+  test('Loans is a carousel page of its own', () {
+    expect(mobileNavRouteFor(AppRoutes.loans), AppRoutes.loans);
+    expect(mobileParentRouteFor(AppRoutes.loans), isNull);
+    expect(mobileSubPageTitle(AppRoutes.loans), isNull);
   });
 
   group('mobileNavRouteFor', () {

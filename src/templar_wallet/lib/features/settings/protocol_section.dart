@@ -14,13 +14,16 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../app/routes.dart';
 import '../../bridge/bridge_provider.dart';
 import '../../bridge/wallet_bridge.dart';
+import '../../services/protocol_portfolio_service.dart';
 import '../../services/protocol_store.dart';
 import '../../shared/relative_time.dart';
 import '../../shared/widgets/banners.dart';
 import '../../shared/widgets/buttons.dart';
 import '../../shared/widgets/cards.dart';
+import '../../shared/widgets/expander.dart';
 import '../../shared/widgets/glass_dialog.dart';
 import '../../shared/widgets/hybrid_kit.dart';
+import '../../shared/widgets/list_rows.dart';
 import '../../shared/widgets/page_header.dart';
 import '../../theme/app_scheme.dart';
 import '../../theme/app_spacing.dart';
@@ -156,7 +159,9 @@ class _ProtocolSectionState extends State<ProtocolSection> {
           PrimaryButton(label: 'Forget', onPressed: () => Navigator.pop(ctx, true)),
         ],
         child: Text(
-          'This removes the record from this device only. ${site.site} keeps '
+          'This removes the record from this device'
+          '${site.hasPortfolio ? ' and tells the site to stop answering this wallet\'s loans view' : ' only'}. '
+          '${site.site} keeps '
           'the watch-only descriptor of "${site.walletName}" — it can still '
           'see that wallet\'s Liquid balance and history — until you remove '
           'the wallet on the site itself. Nothing here can revoke it.',
@@ -165,6 +170,12 @@ class _ProtocolSectionState extends State<ProtocolSection> {
       ),
     );
     if (ok != true) return;
+    // The token first, while the record still has it; a site that cannot be
+    // reached loses the record all the same, and its token dies with the
+    // next «Remove this wallet» on the site.
+    final service = ProtocolPortfolioService.instance;
+    await service.revoke(site);
+    service.forget(site.key);
     await ProtocolStore.instance.forgetSite(site.key);
     final sites = await ProtocolStore.instance.sites();
     if (mounted) setState(() => _sites = sites);
@@ -219,6 +230,8 @@ class _ProtocolSectionState extends State<ProtocolSection> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (!phone) const PageHeader(title: 'Templar Protocol'),
+        _loansShortcut(),
+        const SizedBox(height: AppSpacing.lg),
         _status(),
         const SizedBox(height: AppSpacing.lg),
         ProtocolPasteCard(
@@ -236,6 +249,33 @@ class _ProtocolSectionState extends State<ProtocolSection> {
         _preferences(),
         const SizedBox(height: AppSpacing.lg),
         _howItWorks(),
+      ],
+    );
+  }
+
+  /// The way to the loans themselves. This page is the connector's
+  /// bookkeeping; what the loans are doing is read on the Loans page, so it
+  /// leads here rather than being repeated below.
+  Widget _loansShortcut() {
+    final s = AppScheme.of(context);
+    final withToken = _sites.where((x) => x.hasPortfolio).length;
+    final subtitle = _sites.isEmpty
+        ? 'Active loans, payments and pending signatures, once a site is connected'
+        : withToken == 0
+            ? 'Reconnect a site to see its loans here'
+            : 'Active loans, payments and pending signatures from '
+                '$withToken connected site${withToken == 1 ? '' : 's'}';
+    return ListCard(
+      children: [
+        ListRow(
+          key: const Key('protocol-loans-shortcut'),
+          icon: Icons.handshake_outlined,
+          tint: s.liquid,
+          title: 'Loans',
+          subtitle: subtitle,
+          chevron: true,
+          onTap: () => context.go(AppRoutes.loans),
+        ),
       ],
     );
   }
@@ -404,8 +444,11 @@ class _ProtocolSectionState extends State<ProtocolSection> {
 
   Widget _howItWorks() {
     final s = AppScheme.of(context);
-    return FormCard(
+    return ExpanderCard(
+      key: const Key('protocol-how-it-works'),
       title: 'How it works',
+      subtitle: 'What a connection shares, what a signature does, where the '
+          'loan key lives.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

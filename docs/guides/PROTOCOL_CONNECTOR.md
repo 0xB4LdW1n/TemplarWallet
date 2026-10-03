@@ -13,9 +13,19 @@ the wallet side of it.
 | `templar://connect` | opened from the site's "Connect Templar Wallet" link | Fetches the request, checks version / nonce / origin / transport / expiry, lets the user pick a **software** Liquid wallet, shows the watch-only CT descriptor, the escrow key `[fp/2121h/1h/0h]tpub…` and a receive address, and POSTs them after the app password. |
 | `templar://sign` | opened from a loan page | Fetches the request, shows the site's summary **next to** the wallet's own reading of the PSET (`inspect_pset`: which inputs ask for our key, which outputs are ours / an escrow / external, fee, network), requires the checkbox + app password, signs with `sign_pset` (or `sign_pset_hw` on a Jade) and POSTs the signed PSET. Never broadcasts, never stores the PSET. |
 
-Settings › Templar Protocol (`/settings/protocol`, also one tap from the dashboard's
-Liquid panel) is where all of this is visible: readiness, the paste box, the
-connected sites, what was signed, and the wallet that answers by default.
+| Loans (`/loans`) | beside the Dashboard; a carousel tab on a phone; the Liquid panel's row on the desktop dashboard | The wallet's loans as the connected site reports them (`GET /connector/portfolio`, §7, with the bearer token the connect answer handed back): one card per loan — reference, role, state, the site's «what happens now», the term as a bar with «≈ N d/h left» and the due estimate, owed / principal / collateral / interest / Templar fee — then the wallet's own offers and the closed loans under an expander. **Sign now** feeds the loan's `templar://sign` link to the app's own link handler (no browser round-trip); **Open on Templar Protocol** opens the loan page; **Refresh** asks again. Pulled on open, on Refresh and after every signature answered for that site. `401` drops the token and the page says «Reconnect to see your loans»; `429` and a network failure keep the last answer on screen with the reason. Nothing is persisted but the token. |
+
+Settings › Templar Protocol (`/settings/protocol`, one tap from the Loans
+page) is where the connector's bookkeeping is visible: readiness, the paste
+box, the connected sites, what was signed, and the wallet that answers by
+default — with a Loans shortcut at its top and «How it works» folded under an
+expander.
+
+A site connected by Templar 0.1.0 handed back no token: its row on the Loans
+page says so and offers the site, where «Connect Templar Wallet» issues one
+(a v1.1 wallet proves its key inline and gets the token in the same answer;
+see §9 of the contract). **Forget** on such a site also sends
+`DELETE /connector/portfolio` so the token dies on the site's side too.
 
 The escrow key is a dedicated hardened account (`m/2121'/1'/0'`) below the
 seed: it never collides with spending keys (`84'`) or multisig keys (`87'`),

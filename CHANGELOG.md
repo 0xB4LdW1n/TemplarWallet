@@ -4,6 +4,29 @@ All notable changes to Templar Wallet. Versions follow
 [Semantic Versioning](https://semver.org); while the version starts with 0,
 any release may change anything.
 
+## [Unreleased]
+
+### Templar Protocol
+
+- **Loans**, a destination beside the Dashboard (a carousel tab on a phone):
+  the wallet's loans as the connected site reports them through the v1.1
+  portfolio read (`GET /connector/portfolio`) — role, state, the site's next
+  step, the term as a time bar with the due estimate, owed / principal /
+  collateral / interest / Templar fee — plus the wallet's own offers and the
+  closed loans under an expander. **Sign now** opens a pending signing
+  request in the app itself; **Refresh** asks the site again, and the page
+  refreshes by itself after every signature answered for that site. A revoked
+  token (`401`) is dropped and the page says «Reconnect to see your loans»;
+  rate limits and a site that is offline keep the last answer on screen with
+  the reason.
+- The connect answer's `portfolio` object (URL + bearer token) is kept with
+  the connected site; sites connected by 0.1.0 have none and say so.
+  «Forget» on a site with a token also revokes it on the site
+  (`DELETE /connector/portfolio`).
+- Settings › Templar Protocol leads with a Loans shortcut; «How it works»
+  is folded under an expander. The desktop dashboard's Liquid panel row now
+  opens Loans.
+
 ## [0.1.0] — 2026-09-24
 
 The first public release. Testnet only: Bitcoin testnet and Liquid testnet,

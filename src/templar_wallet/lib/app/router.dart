@@ -6,6 +6,7 @@ import 'routes.dart';
 import 'shell.dart';
 import '../features/wallet_picker/wallet_picker_screen.dart';
 import '../features/dashboard/dashboard_screen.dart';
+import '../features/loans/loans_screen.dart';
 import '../features/send/send_screen.dart';
 import '../features/receive/receive_addresses_screen.dart';
 import '../features/receive/receive_screen.dart';
@@ -94,6 +95,16 @@ final appRouter = GoRouter(
           AppShell(currentPath: state.uri.path, child: child),
       routes: [
         GoRoute(path: AppRoutes.dashboard, builder: (_, _) => const DashboardScreen()),
+        GoRoute(
+          path: AppRoutes.loans,
+          // Loans are Liquid contracts; a Bitcoin-only wallet has none and
+          // no site can connect it, so the page is not reachable there.
+          redirect: (context, state) =>
+              context.read<AppState>().activeWalletLiquid
+                  ? null
+                  : AppRoutes.dashboard,
+          builder: (_, _) => const LoansScreen(),
+        ),
         GoRoute(
           path: AppRoutes.send,
           // Pure watch-only wallets cannot sign — Send is removed entirely,

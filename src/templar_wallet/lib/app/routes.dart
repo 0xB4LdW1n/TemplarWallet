@@ -2,6 +2,9 @@ abstract final class AppRoutes {
   static const String walletPicker = '/';
   static const String welcome = '/welcome';
   static const String dashboard = '/dashboard';
+  /// The wallet's Templar Protocol loans, fed by the connected site
+  /// (`GET /connector/portfolio`). Liquid wallets only — loans live there.
+  static const String loans = '/loans';
   static const String send = '/send';
   static const String receive = '/receive';
   /// Every address a chain has handed out, with what each received. Receive

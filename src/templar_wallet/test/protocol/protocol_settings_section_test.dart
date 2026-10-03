@@ -218,14 +218,54 @@ void main() {
     expect(await ProtocolStore.instance.preferredWalletId(), isNull);
   });
 
-  testWidgets('how it works names the escrow path and links the guide',
+  testWidgets('how it works is folded, and names the escrow path once open',
       (t) async {
     desktop(t);
     await t.pumpWidget(_host(_StubBridge()));
     await t.pumpAndSettle();
 
+    // Folded: the title is there, the long text is not in the way.
+    expect(find.text('How it works'), findsOneWidget);
+    expect(find.textContaining("m/2121'/1'/0'"), findsNothing);
+
+    await t.tap(find.text('How it works'));
+    await t.pumpAndSettle();
     expect(find.textContaining("m/2121'/1'/0'"), findsOneWidget);
     expect(find.textContaining('never broadcasts'), findsOneWidget);
     expect(find.text('docs/guides/PROTOCOL_CONNECTOR.md'), findsOneWidget);
+  });
+
+  testWidgets('the Loans shortcut leads the page and counts usable sites',
+      (t) async {
+    desktop(t);
+    await ProtocolStore.instance.recordConnect(ProtocolConnectedSite(
+      site: 'Old site',
+      origin: 'http://127.0.0.1:8087',
+      network: 'liquid-regtest',
+      walletId: 'w1',
+      walletName: 'Alice',
+      connectedAt: DateTime.now().toUtc(),
+    ));
+    await ProtocolStore.instance.recordConnect(ProtocolConnectedSite(
+      site: 'New site',
+      origin: 'https://lend.example',
+      network: 'liquid-regtest',
+      walletId: 'w1',
+      walletName: 'Alice',
+      connectedAt: DateTime.now().toUtc(),
+      portfolioUrl: 'https://lend.example/connector/portfolio',
+      portfolioToken: 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_ABCDE',
+    ));
+    await t.pumpWidget(_host(_StubBridge(regtest: true)));
+    await t.pumpAndSettle();
+
+    final shortcut = find.byKey(const Key('protocol-loans-shortcut'));
+    expect(shortcut, findsOneWidget);
+    // Above the status card: the first thing on the page is the way to the loans.
+    expect(t.getTopLeft(shortcut).dy,
+        lessThan(t.getTopLeft(find.text('Status')).dy));
+    expect(find.textContaining('from 1 connected site'), findsOneWidget);
+    // The token never reaches the screen.
+    expect(find.textContaining('AbCdEfGh'), findsNothing);
   });
 }

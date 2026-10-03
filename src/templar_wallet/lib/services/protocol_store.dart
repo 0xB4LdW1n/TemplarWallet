@@ -2,11 +2,18 @@
 // signing requests were answered, and which wallet to offer first.
 //
 // SharedPreferences, like the co-signer labels and the issued-asset list —
-// nothing here is a secret, so nothing here belongs in the vault or the
+// no key material lives here, so nothing here belongs in the vault or the
 // keychain. Two consequences the UI states out loud: the records do not
 // travel to another machine and are not in a backup, and forgetting a site
 // removes only this side of the connection — the site keeps the descriptor
 // until the wallet is removed there.
+//
+// One thing here is a secret of a lesser kind: the portfolio token a v1.1
+// site hands back at connect (connector-protocol.md §7). It reads the
+// wallet's loans and mints one-time browser links; it cannot sign or move
+// anything, and the site revokes it on «Remove this wallet». It is kept with
+// the site record, sent only as a bearer header to the URL the site gave,
+// and never logged or displayed.
 
 import 'dart:convert';
 
@@ -54,10 +61,38 @@ class ProtocolStore {
     await _writeSites(all);
   }
 
-  /// Drops the local record. The site is not told: nothing in the protocol
-  /// revokes a descriptor, which is why the UI says so plainly.
+  /// Drops the local record. The site is not told about the descriptor:
+  /// nothing in the protocol revokes one, which is why the UI says so
+  /// plainly. (The portfolio token, when there is one, is revoked by the
+  /// caller with `DELETE /connector/portfolio` before this runs.)
   Future<void> forgetSite(String key) async {
     final all = [...await sites()]..removeWhere((s) => s.key == key);
+    await _writeSites(all);
+  }
+
+  /// The sites that hold a view of one wallet — what the Loans screen lists.
+  Future<List<ProtocolConnectedSite>> sitesForWallet(String walletId) async =>
+      (await sites()).where((s) => s.walletId == walletId).toList();
+
+  /// Stores (or replaces) the portfolio URL and token of a connected site —
+  /// the `portfolio` object of a connect answer, or of the signed callback of
+  /// a proof request (§7). A site that is not recorded is left alone.
+  Future<void> setPortfolio(String key,
+      {required String url, required String token}) async {
+    final all = [...await sites()];
+    final i = all.indexWhere((s) => s.key == key);
+    if (i < 0) return;
+    all[i] = all[i].copyWith(portfolioUrl: url, portfolioToken: token);
+    await _writeSites(all);
+  }
+
+  /// Forgets the token alone: the site answered 401, so it is dead on that
+  /// side too and the Loans screen must say «Reconnect».
+  Future<void> clearPortfolio(String key) async {
+    final all = [...await sites()];
+    final i = all.indexWhere((s) => s.key == key);
+    if (i < 0 || !all[i].hasPortfolio) return;
+    all[i] = all[i].copyWith(clearPortfolio: true);
     await _writeSites(all);
   }
 

@@ -53,10 +53,10 @@ TemplarWallet/
     │   ├── shared/widgets/     # design-system kit (glass_card, value_chart,
     │   │                       #   utxo_views, ur_qr, step_flow_scaffold, …)
     │   └── features/           # welcome, wallet_picker, create_wallet,
-    │                           #   import_wallet, dashboard, send, receive,
-    │                           #   history, utxos, wallet_info, psbt, liquid,
-    │                           #   peg, swap, hardware, vault, protocol,
-    │                           #   settings
+    │                           #   import_wallet, dashboard, loans, send,
+    │                           #   receive, history, utxos, wallet_info, psbt,
+    │                           #   liquid, peg, swap, hardware, vault,
+    │                           #   protocol, settings
     ├── assets/images/          # templar-wallet-logo.png, templar-cross.svg
     └── macos/ linux/ windows/ android/  # platform runners
 ```

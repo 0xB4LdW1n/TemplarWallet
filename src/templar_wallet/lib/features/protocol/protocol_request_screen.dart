@@ -18,6 +18,7 @@ import '../../shared/widgets/cards.dart';
 import '../../shared/widgets/code_box.dart';
 import '../../shared/widgets/hybrid_kit.dart';
 import '../../shared/widgets/page_header.dart';
+import '../../services/protocol_portfolio_service.dart';
 import '../../services/protocol_store.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_scheme.dart';
@@ -388,7 +389,7 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
           'leaves this computer.',
     );
     if (!ok || !mounted) return;
-    final accepted = await _post({
+    final reply = await _post({
       'version': 1,
       'nonce': req.nonce,
       'network': req.network,
@@ -399,16 +400,21 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
       'signer': w.isHardwareWallet ? 'jade' : 'software',
     });
     // Only once the site has taken it: a refused callback shared nothing.
-    if (accepted) await _recordConnect();
+    if (reply != null) {
+      await _recordConnect(
+          ProtocolConnectedSite.portfolioFromReply(reply['portfolio']));
+    }
   }
 
   /// Remembers that this site now holds a watch-only view of this wallet.
-  /// What is kept is deliberately thin — see protocol_records.dart.
-  Future<void> _recordConnect() async {
+  /// What is kept is deliberately thin — see protocol_records.dart — plus,
+  /// since v1.1, the portfolio URL and token the site hands back, which feed
+  /// the Loans screen (§7). A v1 site sends none and the record says so.
+  Future<void> _recordConnect(({String url, String token})? portfolio) async {
     final w = _wallet;
     final req = _request;
     if (w == null || req == null) return;
-    await ProtocolStore.instance.recordConnect(ProtocolConnectedSite(
+    final site = ProtocolConnectedSite(
       site: req.site,
       origin: _link?.url.origin ?? '',
       network: req.network,
@@ -417,7 +423,44 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
       connectedAt: DateTime.now().toUtc(),
       escrowFingerprint: protocolKeyFingerprint(_escrowXpub),
       receiveAddress: _receiveAddress ?? '',
-    ));
+      portfolioUrl: portfolio?.url,
+      portfolioToken: portfolio?.token,
+    );
+    await ProtocolStore.instance.recordConnect(site);
+    if (site.hasPortfolio) {
+      // Warm the Loans screen; nobody waits for this.
+      unawaited(ProtocolPortfolioService.instance.refreshOrigin(site.origin));
+    }
+  }
+
+  /// A signed callback's answer may carry the `portfolio` object too: the
+  /// v1 reconnect path hands the token over only once the key is proved
+  /// (§7, §9.2). The record of this site and wallet takes it; when there is
+  /// none yet — the connect happened from another install — one is made,
+  /// since the site evidently knows this wallet.
+  Future<void> _storePortfolioFromSign(Map<String, dynamic> reply) async {
+    final w = _wallet;
+    final req = _request;
+    final origin = _link?.url.origin;
+    final portfolio = ProtocolConnectedSite.portfolioFromReply(reply['portfolio']);
+    if (w == null || req == null || origin == null || portfolio == null) return;
+    final store = ProtocolStore.instance;
+    final key = '$origin|${w.id}';
+    final known = (await store.sites()).any((s) => s.key == key);
+    if (known) {
+      await store.setPortfolio(key, url: portfolio.url, token: portfolio.token);
+    } else {
+      await store.recordConnect(ProtocolConnectedSite(
+        site: req.site,
+        origin: origin,
+        network: req.network,
+        walletId: w.id,
+        walletName: w.name,
+        connectedAt: DateTime.now().toUtc(),
+        portfolioUrl: portfolio.url,
+        portfolioToken: portfolio.token,
+      ));
+    }
   }
 
   /// Remembers how a signing request ended.
@@ -461,19 +504,28 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
       return;
     }
     if (!mounted) return;
-    final accepted = await _post({
+    final reply = await _post({
       'version': 1,
       'id': req.id,
       'nonce': req.nonce,
       'pset': signed,
     });
     await _record(
-        req, accepted ? ProtocolSignOutcome.signed : ProtocolSignOutcome.failed);
+        req, reply != null ? ProtocolSignOutcome.signed : ProtocolSignOutcome.failed);
+    if (reply != null) {
+      await _storePortfolioFromSign(reply);
+      // The loan moved a step: the Loans screen should say so when the user
+      // gets back to it, without waiting for them to press Refresh.
+      final origin = _link?.url.origin;
+      if (origin != null) {
+        unawaited(ProtocolPortfolioService.instance.refreshOrigin(origin));
+      }
+    }
   }
 
-  /// Sends the answer. Returns whether the site accepted it; a refusal has
-  /// already been shown by then.
-  Future<bool> _post(Map<String, dynamic> body) async {
+  /// Sends the answer. Returns the site's reply when it accepted it, null
+  /// otherwise — a refusal has already been shown by then.
+  Future<Map<String, dynamic>?> _post(Map<String, dynamic> body) async {
     final req = _request!;
     setState(() => _busy = true);
     try {
@@ -510,19 +562,19 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
             '${req.site} rejected the answer (HTTP ${resp.statusCode})'
             '${why != null && why.isNotEmpty ? ': $why' : '.'}');
       }
-      if (!mounted) return true;
+      if (!mounted) return reply;
       setState(() {
         _busy = false;
         _nextUrl = reply['next'] as String?;
         _phase = _Phase.done;
       });
-      return true;
+      return reply;
     } on ProtocolLinkError catch (e) {
       _fail(e);
-      return false;
+      return null;
     } catch (e) {
       _fail(e);
-      return false;
+      return null;
     }
   }
 
