@@ -122,6 +122,7 @@ class AppState extends ChangeNotifier {
   static const _kFiatCurrency = 'pref_fiat_currency';
   static const _kBitcoinUnit = 'pref_bitcoin_unit';
   static const _kBalancesHidden = 'pref_balances_hidden';
+  static const _kLoansInMenu = 'pref_protocol_loans_in_menu';
   static const _kBtcExplorerDefault = 'https://mempool.space/testnet';
   static const _kLiquidExplorerDefault = 'https://blockstream.info/liquidtestnet';
 
@@ -174,6 +175,22 @@ class AppState extends ChangeNotifier {
     await prefs.setBool(_kReduceEffects, value);
   }
 
+  /// Whether the Templar Protocol Loans page sits in the main navigation
+  /// (the sidebar, the phone carousel). Off by default: a wallet that takes
+  /// no part in loans has no use for the entry. Switched on from Settings ›
+  /// Templar Protocol, or with the checkbox a `templar://connect` offers.
+  /// The page itself stays reachable from Settings either way.
+  bool _loansInMenu = false;
+  bool get loansInMenu => _loansInMenu;
+
+  Future<void> setLoansInMenu(bool value) async {
+    if (_loansInMenu == value) return;
+    _loansInMenu = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kLoansInMenu, value);
+  }
+
   Future<void> loadPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     _btcExplorerUrl = prefs.getString(_kBtcExplorer) ?? _kBtcExplorerDefault;
@@ -194,6 +211,7 @@ class AppState extends ChangeNotifier {
     _fiatCurrency = prefs.getString(_kFiatCurrency) ?? 'USD';
     _bitcoinUnit = prefs.getString(_kBitcoinUnit) ?? 'btc';
     _balancesHidden = prefs.getBool(_kBalancesHidden) ?? false;
+    _loansInMenu = prefs.getBool(_kLoansInMenu) ?? false;
     // Keep the price feed aligned with the saved currency.
     PriceService.instance.setCurrency(_fiatCurrency);
     notifyListeners();

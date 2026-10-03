@@ -399,6 +399,8 @@ class _LoansScreenState extends State<LoansScreen> {
         ),
         gap,
       ],
+      _SummaryStrip(portfolio: portfolio, phone: phone),
+      gap,
       ListSectionLabel(
         label: open.isEmpty
             ? 'Active loans'
@@ -485,6 +487,155 @@ class _LoansScreenState extends State<LoansScreen> {
 }
 
 // ── Pieces ────────────────────────────────────────────────────────────────────
+
+/// Four stat tiles that say, before any card is read, what the site holds
+/// for this wallet: open loans, signatures waiting, offers, closed loans.
+/// A waiting signature lights its tile in the Action colour — it is the one
+/// thing on the page to do.
+class _SummaryStrip extends StatelessWidget {
+  const _SummaryStrip({required this.portfolio, required this.phone});
+  final ProtocolPortfolio portfolio;
+  final bool phone;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = AppScheme.of(context);
+    final p = portfolio;
+    final open = p.openLoans.length;
+    final toSign = p.pendingCount;
+    final asBorrower = p.openLoans.where((l) => l.role == 'borrower').length;
+    final asLender = open - asBorrower;
+    final tiles = <Widget>[
+      _StatTile(
+        icon: Icons.handshake_outlined,
+        tint: s.liquid,
+        value: '$open',
+        label: open == 1 ? 'active loan' : 'active loans',
+        detail: open == 0
+            ? null
+            : [
+                if (asBorrower > 0) '$asBorrower borrowing',
+                if (asLender > 0) '$asLender lending',
+              ].join(' · '),
+      ),
+      _StatTile(
+        icon: Icons.draw_outlined,
+        tint: toSign > 0 ? s.accent : s.inkFaint,
+        value: '$toSign',
+        label: 'to sign',
+        detail: toSign > 0 ? 'the site waits for you' : 'nothing waiting',
+        emphasis: toSign > 0,
+      ),
+      _StatTile(
+        icon: Icons.storefront_outlined,
+        tint: s.inkSecondary,
+        value: '${p.offers.length}',
+        label: p.offers.length == 1 ? 'open offer' : 'open offers',
+        detail: p.offers.isEmpty ? null : 'yours on the market',
+      ),
+      _StatTile(
+        icon: Icons.inventory_2_outlined,
+        tint: s.inkSecondary,
+        value: '${p.closedLoans.length}',
+        label: 'closed',
+        detail: p.closedLoans.isEmpty
+            ? null
+            : '${p.closedLoans.where((l) => l.state == ProtocolLoanState.repaid).length} repaid',
+      ),
+    ];
+    if (phone) {
+      return Column(
+        children: [
+          Row(children: [
+            Expanded(child: tiles[0]),
+            const SizedBox(width: AppSpacing.sm),
+            Expanded(child: tiles[1]),
+          ]),
+          const SizedBox(height: AppSpacing.sm),
+          Row(children: [
+            Expanded(child: tiles[2]),
+            const SizedBox(width: AppSpacing.sm),
+            Expanded(child: tiles[3]),
+          ]),
+        ],
+      );
+    }
+    return Row(
+      children: [
+        for (var i = 0; i < tiles.length; i++) ...[
+          if (i > 0) const SizedBox(width: AppSpacing.md),
+          Expanded(child: tiles[i]),
+        ],
+      ],
+    );
+  }
+}
+
+class _StatTile extends StatelessWidget {
+  const _StatTile({
+    required this.icon,
+    required this.tint,
+    required this.value,
+    required this.label,
+    this.detail,
+    this.emphasis = false,
+  });
+  final IconData icon;
+  final Color tint;
+  final String value;
+  final String label;
+  final String? detail;
+  final bool emphasis;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = AppScheme.of(context);
+    return Container(
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: BoxDecoration(
+        color: s.panel,
+        borderRadius: BorderRadius.circular(AppSpacing.radiusMd),
+        border: Border.all(color: emphasis ? s.accent.withValues(alpha: 0.6) : s.edge),
+      ),
+      child: Row(
+        children: [
+          ListIconTile(icon: icon, tint: tint, size: 36),
+          const SizedBox(width: AppSpacing.sm + 2),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.baseline,
+                  textBaseline: TextBaseline.alphabetic,
+                  children: [
+                    Text(value,
+                        style: AppTypography.numericLarge.copyWith(
+                          color: emphasis ? s.accent : s.ink,
+                          fontWeight: FontWeight.w700,
+                        )),
+                    const SizedBox(width: AppSpacing.xs),
+                    Flexible(
+                      child: Text(label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppTypography.caption.copyWith(color: s.inkSecondary)),
+                    ),
+                  ],
+                ),
+                if (detail != null)
+                  Text(detail!,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppTypography.caption.copyWith(color: s.inkFaint, fontSize: 11.5)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 /// The phone's header: the shell already names the wallet above, so this is
 /// the site line as an eyebrow with the two actions at its right.

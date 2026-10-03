@@ -11,8 +11,9 @@ use templar_core::{LiquidBackend, LiquidNetwork, REGTEST_DEFAULT_POLICY_ASSET};
 
 use crate::state::AppFfiState;
 use crate::types::{
-    IssueResultDto, LiquidNetworkDto, ProtocolCheckDto, ProtocolCheckVerdictDto, PsetInputDto,
-    PsetInspectionDto, PsetOutputDto, PsetRecipientDto, TxIoDto, TxOutputSpec, TxPreviewDto,
+    IssueResultDto, LiquidNetworkDto, NetChangeDto, ProtocolCheckDto, ProtocolCheckVerdictDto,
+    PsetInputDto, PsetInspectionDto, PsetOutputDto, PsetRecipientDto, TxIoDto, TxOutputSpec,
+    TxPreviewDto,
 };
 
 /// The clear message every proof route gives a Jade-backed wallet until the
@@ -589,6 +590,22 @@ pub fn inspect_pset(
         .collect();
 
     let has_unverified_outputs = details.has_unverified_outputs();
+    // The net effect per asset, as a sentence: the only figure a PSET cannot
+    // misstate, so the review leads with it instead of raw inputs/outputs.
+    let net_change_lines = details
+        .net_change
+        .iter()
+        .filter(|(_, v)| **v != 0)
+        .map(|(asset, v)| {
+            let (ticker, magnitude) = asset_display(state, asset, v.unsigned_abs());
+            NetChangeDto {
+                asset_id: asset.clone(),
+                ticker,
+                amount_sats: *v,
+                display_amount: format!("{}{magnitude}", if *v < 0 { "-" } else { "+" }),
+            }
+        })
+        .collect();
     Ok(PsetInspectionDto {
         network: details.network.clone(),
         fee_sats: details.fee as i64,
@@ -596,6 +613,7 @@ pub fn inspect_pset(
         recipients,
         inputs,
         outputs,
+        net_change_lines,
         sigs_have: details.sigs_present_min,
         sigs_needed: needed as u32,
         signers_present: details.signers_present.clone(),

@@ -29,9 +29,31 @@ any release may change anything.
   the connected site; sites connected by 0.1.0 have none and say so.
   «Forget» on a site with a token also revokes it on the site
   (`DELETE /connector/portfolio`).
-- Settings › Templar Protocol leads with a Loans shortcut; «How it works»
-  is folded under an expander. The desktop dashboard's Liquid panel row now
-  opens Loans.
+- Loans is **opt-in in the navigation**: off by default, switched on from
+  Settings › Templar Protocol («Show Loans in the menu») or with the small
+  checkbox a `templar://connect` offers; the page stays reachable from
+  Settings and the dashboard either way. Settings › Templar Protocol leads
+  with the Loans shortcut and that switch; «How it works» is folded under
+  an expander. The desktop dashboard's Liquid panel row now opens Loans.
+- The Loans page opens with four stat tiles (active, to sign, offers,
+  closed); each loan card carries a role glyph, a term ring and a flow strip
+  (collateral → escrow, principal → borrower, repayment → lender) beside the
+  time bar and the amounts.
+- **The signing request screen is rebuilt** for every action: a header with
+  the action's glyph, loan and role; «What changes for this wallet» — the net
+  change per asset the engine computed from its own unblinding, green in and
+  amber out; «Where the money goes» — every output as a flow with a glyph for
+  its destination (this wallet, the loan escrow, someone else, the fee); the
+  site's own lines to compare; and the raw inputs/outputs, request ids and
+  escrow contract under a «Technical details» fold. Connect shows the share
+  as a picture (what leaves, what never does). The engine's `inspect_pset`
+  gains `net_change_lines` (ticker and formatted amount per asset).
+- **The wallet is always asked for.** A request from a site no longer picks
+  the open or preferred wallet by itself: the chooser leads with the wallet
+  this device connected to that site («Connected to this site»), then the
+  preferred and the open one, lists the rest with the reason they cannot
+  take part, and the review offers «Change wallet». Fixes signing with two
+  sites, each knowing a different wallet, from one machine.
 - **Proof of key** (contract §9). A v1.1 connect carries a `challenge`; the
   wallet builds the check PSET from it and its loan key (one input on
   `sha256("templar-proof" ‖ challenge)`, an explicit 0 L-BTC coin to the

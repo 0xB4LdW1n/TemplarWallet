@@ -22,10 +22,16 @@ void main() {
       expect(ids, ['dashboard', 'history', 'utxos', 'settings']);
     });
 
-    test('a Liquid wallet adds Loans beside the Dashboard and the Liquid hub',
-        () {
+    test('a Liquid wallet adds the Liquid hub; Loans only when asked for', () {
       final ids = mobileNavItems(liquid: true).map((i) => i.id).toList();
-      expect(ids, ['dashboard', 'loans', 'history', 'utxos', 'liquid', 'settings']);
+      expect(ids, ['dashboard', 'history', 'utxos', 'liquid', 'settings']);
+      final withLoans =
+          mobileNavItems(liquid: true, loans: true).map((i) => i.id).toList();
+      expect(withLoans,
+          ['dashboard', 'loans', 'history', 'utxos', 'liquid', 'settings']);
+      // Loans need Liquid: the flag alone adds nothing to a Bitcoin wallet.
+      expect(mobileNavItems(liquid: false, loans: true).map((i) => i.id),
+          ['dashboard', 'history', 'utxos', 'settings']);
     });
   });
 

@@ -9,8 +9,10 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../app/app_state.dart';
 import '../../app/routes.dart';
 import '../../bridge/bridge_provider.dart';
 import '../../bridge/wallet_bridge.dart';
@@ -253,9 +255,11 @@ class _ProtocolSectionState extends State<ProtocolSection> {
     );
   }
 
-  /// The way to the loans themselves. This page is the connector's
-  /// bookkeeping; what the loans are doing is read on the Loans page, so it
-  /// leads here rather than being repeated below.
+  /// The way to the loans themselves, and the switch that puts them in the
+  /// main menu. This page is the connector's bookkeeping; what the loans are
+  /// doing is read on the Loans page, so it leads here rather than being
+  /// repeated below. The menu entry is opt-in: a wallet that takes no part
+  /// in loans keeps its navigation as it was.
   Widget _loansShortcut() {
     final s = AppScheme.of(context);
     final withToken = _sites.where((x) => x.hasPortfolio).length;
@@ -265,6 +269,7 @@ class _ProtocolSectionState extends State<ProtocolSection> {
             ? 'Reconnect a site to see its loans here'
             : 'Active loans, payments and pending signatures from '
                 '$withToken connected site${withToken == 1 ? '' : 's'}';
+    final inMenu = context.select<AppState, bool>((st) => st.loansInMenu);
     return ListCard(
       children: [
         ListRow(
@@ -275,6 +280,20 @@ class _ProtocolSectionState extends State<ProtocolSection> {
           subtitle: subtitle,
           chevron: true,
           onTap: () => context.go(AppRoutes.loans),
+        ),
+        ListRow(
+          icon: Icons.menu_open_rounded,
+          tint: s.inkSecondary,
+          title: 'Show Loans in the menu',
+          subtitle: inMenu
+              ? 'Beside the Dashboard, in the sidebar and the phone bar'
+              : 'Off: Loans opens from here and from the dashboard only',
+          trailing: ListSwitch(
+            key: const Key('protocol-loans-in-menu'),
+            value: inMenu,
+            onChanged: (v) => context.read<AppState>().setLoansInMenu(v),
+            semanticLabel: 'Show Loans in the menu',
+          ),
         ),
       ],
     );

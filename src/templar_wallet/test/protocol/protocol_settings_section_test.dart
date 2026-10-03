@@ -61,10 +61,10 @@ WalletSummary _wallet(String id, String name, {bool liquid = true}) =>
       masterFingerprint: 'cafebabe',
     );
 
-Widget _host(WalletBridge bridge) => MaterialApp(
+Widget _host(WalletBridge bridge, {AppState? state}) => MaterialApp(
       theme: AppTheme.dark(),
       home: ChangeNotifierProvider<AppState>(
-        create: (_) => AppState(),
+        create: (_) => state ?? AppState(),
         child: Scaffold(
           body: SingleChildScrollView(child: ProtocolSection(bridge: bridge)),
         ),
@@ -267,5 +267,24 @@ void main() {
     expect(find.textContaining('from 1 connected site'), findsOneWidget);
     // The token never reaches the screen.
     expect(find.textContaining('AbCdEfGh'), findsNothing);
+  });
+
+  testWidgets('Loans stays out of the menu until the switch puts it there',
+      (t) async {
+    desktop(t);
+    final state = AppState();
+    await t.pumpWidget(_host(_StubBridge(), state: state));
+    await t.pumpAndSettle();
+
+    expect(state.loansInMenu, isFalse);
+    expect(find.textContaining('Off: Loans opens from here'), findsOneWidget);
+    await t.tap(find.byKey(const Key('protocol-loans-in-menu')));
+    await t.pumpAndSettle();
+    expect(state.loansInMenu, isTrue);
+    expect(find.textContaining('Beside the Dashboard'), findsOneWidget);
+    // Remembered across a restart.
+    final again = AppState();
+    await again.loadPrefs();
+    expect(again.loansInMenu, isTrue);
   });
 }

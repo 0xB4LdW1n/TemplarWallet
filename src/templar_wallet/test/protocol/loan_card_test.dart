@@ -100,7 +100,16 @@ void main() {
 
     // Who, where, what next.
     expect(find.text('SQ-1'), findsOneWidget);
-    expect(find.text('BORROWER'), findsOneWidget);
+    expect(find.text('You are the borrower'), findsOneWidget);
+    // The flow strip: collateral into the escrow, principal to you, what
+    // closes the loan back to the lender.
+    // "Collateral" names the flow row and the grid line.
+    expect(find.text('Collateral'), findsNWidgets(2));
+    expect(find.text('Escrow'), findsOneWidget);
+    expect(find.text('To repay'), findsOneWidget);
+    expect(find.text('Lender'), findsWidgets);
+    // The term ring reads the progress: (143 − 118) / (168 − 118) = 50%.
+    expect(find.text('50%'), findsOneWidget);
     expect(find.text('ACTIVE'), findsOneWidget);
     expect(find.text('Your signature'), findsOneWidget);
     expect(find.text('Sign the repayment of SQ-1'), findsOneWidget);
@@ -117,8 +126,9 @@ void main() {
     expect(find.text('YOU OWE'), findsOneWidget);
     expect(find.text('10,200'), findsOneWidget);
     expect(find.text('rUSDt'), findsOneWidget);
-    expect(find.text('10,000 rUSDt'), findsOneWidget);
-    expect(find.text('0.5 rLBTC'), findsOneWidget);
+    // Principal and collateral appear in the flow strip and in the grid.
+    expect(find.text('10,000 rUSDt'), findsNWidgets(2));
+    expect(find.text('0.5 rLBTC'), findsNWidgets(2));
     expect(find.text('200 rUSDt · 2%'), findsOneWidget);
     expect(find.text('50 rUSDt · paid by borrower'), findsOneWidget);
 
@@ -171,8 +181,11 @@ void main() {
 
     expect(find.text('REPAID'), findsOneWidget);
     expect(find.byKey(const Key('loan-time-left')), findsNothing);
+    expect(find.text('50%'), findsNothing, reason: 'no ring once closed');
     expect(find.text('YOU OWE'), findsNothing);
-    expect(find.text('10,000 rUSDt'), findsOneWidget);
+    expect(find.text('To repay'), findsNothing);
+    expect(find.text('Repaid'), findsOneWidget);
+    expect(find.text('10,000 rUSDt'), findsWidgets);
   });
 
   testWidgets('the privacy mask hides the figures, not the loan', (t) async {

@@ -162,6 +162,34 @@ class PsetOutput {
       };
 }
 
+/// One asset's net effect on this wallet: what comes in (positive) or goes
+/// out (negative), from the engine's own unblinding — the one figure a PSET
+/// cannot misstate, and what a review leads with.
+class PsetNetChange {
+  const PsetNetChange({
+    required this.assetId,
+    required this.ticker,
+    required this.amountSats,
+    required this.displayAmount,
+  });
+
+  factory PsetNetChange.fromJson(Map<String, dynamic> j) => PsetNetChange(
+        assetId: j['asset_id'] as String? ?? '',
+        ticker: j['ticker'] as String? ?? '',
+        amountSats: (j['amount_sats'] as num?)?.toInt() ?? 0,
+        displayAmount: j['display_amount'] as String? ?? '',
+      );
+
+  final String assetId;
+  final String ticker;
+  final int amountSats;
+
+  /// Signed and formatted: `+9,950 tUSDt`, `-0.01000000 L-BTC`.
+  final String displayAmount;
+
+  bool get isIncoming => amountSats > 0;
+}
+
 /// A decoded Liquid PSET: what it pays, what it costs, and who still has to
 /// sign it.
 class PsetInspection {
@@ -178,6 +206,7 @@ class PsetInspection {
     this.network = 'liquid-testnet',
     this.inputs = const [],
     this.outputs = const [],
+    this.netChangeLines = const [],
     this.hasUnverifiedOutputs = false,
   });
 
@@ -202,8 +231,15 @@ class PsetInspection {
         outputs: (j['outputs'] as List<dynamic>? ?? const [])
             .map((e) => PsetOutput.fromJson(e as Map<String, dynamic>))
             .toList(),
+        netChangeLines: (j['net_change_lines'] as List<dynamic>? ?? const [])
+            .map((e) => PsetNetChange.fromJson(e as Map<String, dynamic>))
+            .toList(),
         hasUnverifiedOutputs: j['has_unverified_outputs'] as bool? ?? false,
       );
+
+  /// What this wallet gains or pays per asset, zeros left out. Empty when
+  /// the PSET moves nothing of this wallet's (a proof of key, say).
+  final List<PsetNetChange> netChangeLines;
 
   /// Some output claims an amount or asset its commitment does not prove.
   /// What it really pays cannot be shown, and the engine will not sign it.

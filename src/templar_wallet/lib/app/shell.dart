@@ -280,11 +280,12 @@ class _MobileShellState extends State<MobileShell> {
           // In the Scaffold's own slot rather than at the foot of the
           // Column: the keyboard then covers the bar and the page above it
           // resizes, instead of the bar riding up on top of the keyboard.
-          bottomNavigationBar: Selector<AppState, bool>(
-            selector: (_, st) => st.activeWalletLiquid,
-            builder: (context, liquid, _) {
+          bottomNavigationBar: Selector<AppState, (bool, bool)>(
+            selector: (_, st) => (st.activeWalletLiquid, st.loansInMenu),
+            builder: (context, flags, _) {
+              final (liquid, loans) = flags;
               return CarouselNav(
-                items: mobileNavItems(liquid: liquid),
+                items: mobileNavItems(liquid: liquid, loans: loans),
                 currentRoute: mobileNavRouteFor(widget.currentPath),
                 onSelect: (route) => context.go(route),
                 onCenterTap: _scrollToTop,
@@ -297,12 +298,13 @@ class _MobileShellState extends State<MobileShell> {
   }
 }
 
-/// The carousel entries: the six places a wallet is *browsed* from. The
-/// bar used to carry ten; Send and Receive now live on the Dashboard hero
-/// (where the balance they act on is), Wallet Info sits inside Settings,
-/// and LiquiDEX and Peg share the Liquid slot as tabs. Loans and the Liquid
-/// slot are gated — a Bitcoin-only wallet has nothing to put behind them.
-List<CarouselNavItem> mobileNavItems({required bool liquid}) {
+/// The carousel entries: the five places a wallet is *browsed* from, plus
+/// Loans when asked for. The bar used to carry ten; Send and Receive now
+/// live on the Dashboard hero (where the balance they act on is), Wallet
+/// Info sits inside Settings, and LiquiDEX and Peg share the Liquid slot as
+/// tabs. The Liquid slot is gated — a Bitcoin-only wallet has nothing to put
+/// behind it; Loans is opt-in (`AppState.loansInMenu`) and Liquid-only.
+List<CarouselNavItem> mobileNavItems({required bool liquid, bool loans = false}) {
   return [
     const CarouselNavItem(
       id: 'dashboard',
@@ -311,7 +313,7 @@ List<CarouselNavItem> mobileNavItems({required bool liquid}) {
       icon: Icons.home_outlined,
       activeIcon: Icons.home,
     ),
-    if (liquid)
+    if (liquid && loans)
       const CarouselNavItem(
         id: 'loans',
         label: 'Loans',
@@ -1005,8 +1007,9 @@ class _Sidebar extends StatelessWidget {
               ),
               // Loans sit beside the Dashboard, not under Liquid: they are
               // what the wallet is for in the protocol, and a site's loan
-              // state is read here first.
-              if (showLiquid)
+              // state is read here first. Opt-in: Settings › Templar Protocol
+              // (or the connect screen's checkbox) puts it here.
+              if (showLiquid && appState.loansInMenu)
                 _item(
                   AppRoutes.loans,
                   'Loans',

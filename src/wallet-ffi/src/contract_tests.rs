@@ -2642,6 +2642,17 @@ fn inspect_pset_describes_a_protocol_escrow_spend() {
     );
     assert_eq!(d["network"], json!("liquid-testnet"));
     assert_eq!(d["fee_sats"], json!(500));
+    // The net-change lines the review leads with: none here, since every
+    // output is explicit and none is this wallet's own; the list is still
+    // there for the Dart side to read.
+    assert!(d["net_change_lines"].is_array(), "{d}");
+    for line in d["net_change_lines"].as_array().unwrap() {
+        assert_keys(
+            "net_change_lines[]",
+            line,
+            &["asset_id", "ticker", "amount_sats", "display_amount"],
+        );
+    }
 
     let inputs = d["inputs"].as_array().unwrap();
     assert_eq!(inputs.len(), 1);

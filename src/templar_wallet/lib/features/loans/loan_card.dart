@@ -1,11 +1,19 @@
 // One loan as a tile on the Loans screen: who you are in it and where it
-// stands, what the site expects next, how much of the term has run, the
-// money, and the one or two things you can do from here.
+// stands, what the site expects next, how much of the term has run, where
+// the money sits, and the one or two things you can do from here.
 //
 // The card is pure presentation over `ProtocolLoan`: it never fetches and
 // never signs. "Sign now" hands the loan's `templar://sign` link back to the
 // screen, which feeds it to the app's own link handler — the same path a
 // link from the browser takes, with the same review and the same gate.
+//
+// Reading order, top to bottom: the glyph says the role (money coming to
+// you, or going out as a lender), the ring says how far the term has run,
+// the chips say the state; the next line is the site's own «what happens
+// now»; the flow strip shows collateral, principal and what closes the loan
+// as arrows between you, the escrow and the other party; the amounts follow.
+
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -13,6 +21,7 @@ import '../../shared/widgets/badges.dart';
 import '../../shared/widgets/buttons.dart';
 import '../../shared/widgets/code_box.dart';
 import '../../shared/widgets/hybrid_kit.dart';
+import '../../shared/widgets/list_rows.dart';
 import '../../shared/widgets/privacy.dart';
 import '../../theme/app_scheme.dart';
 import '../../theme/app_spacing.dart';
@@ -32,7 +41,7 @@ class LoanCard extends StatefulWidget {
 
   final ProtocolLoan loan;
 
-  /// The site's chain tip when the portfolio was computed — the bar's "now".
+  /// The site's chain tip when the portfolio was computed — the ring's "now".
   final int tipHeight;
 
   /// Called with the pending request when "Sign now" is pressed. Null hides
@@ -84,7 +93,7 @@ class _LoanCardState extends State<LoanCard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _TitleRow(loan: loan),
+            _TitleRow(loan: loan, tipHeight: widget.tipHeight),
             if (next != null && next.label.isNotEmpty) ...[
               const SizedBox(height: AppSpacing.md),
               _NextLine(action: next, pending: pending, now: widget.now),
@@ -93,6 +102,8 @@ class _LoanCardState extends State<LoanCard> {
               const SizedBox(height: AppSpacing.md),
               _TermBar(loan: loan, tipHeight: widget.tipHeight),
             ],
+            const SizedBox(height: AppSpacing.md),
+            _FlowStrip(loan: loan),
             const SizedBox(height: AppSpacing.md),
             Divider(height: 1, color: s.edge),
             const SizedBox(height: AppSpacing.sm),
@@ -122,14 +133,72 @@ class _LoanCardState extends State<LoanCard> {
 
 // ── Pieces ────────────────────────────────────────────────────────────────────
 
+/// Glyph · reference · role and state chips · the term ring.
 class _TitleRow extends StatelessWidget {
-  const _TitleRow({required this.loan});
+  const _TitleRow({required this.loan, required this.tipHeight});
   final ProtocolLoan loan;
+  final int tipHeight;
 
   @override
   Widget build(BuildContext context) {
     final s = AppScheme.of(context);
-    final stateColor = switch (loan.state) {
+    final lender = loan.role == 'lender';
+    final stateColor = loanStateColor(s, loan.state);
+    final progress = loan.termProgress(tipHeight);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        // Money comes to a borrower and leaves a lender: the arrow says
+        // which, the hue says it is a Liquid thing.
+        ListIconTile(
+          icon: lender ? Icons.call_made_rounded : Icons.call_received_rounded,
+          tint: lender ? s.accent : s.liquid,
+        ),
+        const SizedBox(width: kListGap),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Text(loan.ref,
+                      style: AppTypography.sectionTitleOf(context)
+                          .copyWith(color: s.ink)),
+                  const SizedBox(width: AppSpacing.sm),
+                  TagChip(label: loan.stateLabel, color: stateColor),
+                ],
+              ),
+              const SizedBox(height: 2),
+              Text(
+                lender ? 'You are the lender' : 'You are the borrower',
+                style: AppTypography.caption.copyWith(color: s.inkSecondary),
+              ),
+            ],
+          ),
+        ),
+        if (loan.pendingRequest != null) ...[
+          const StatusBadge(
+            label: 'Your signature',
+            variant: BadgeVariant.accent,
+            dot: true,
+          ),
+          const SizedBox(width: AppSpacing.sm),
+        ],
+        if (loan.state.isOpen)
+          _TermRing(
+            progress: progress,
+            label: progress == null
+                ? '—'
+                : '${(progress * 100).round()}%',
+            color: progress != null && progress >= 1 ? s.warning : s.liquid,
+          ),
+      ],
+    );
+  }
+}
+
+/// The chip colour of a loan state, shared with the Loans screen's summary.
+Color loanStateColor(AppScheme s, ProtocolLoanState state) => switch (state) {
       ProtocolLoanState.originating => s.warning,
       ProtocolLoanState.active => s.liquid,
       ProtocolLoanState.repaid => s.success,
@@ -137,27 +206,75 @@ class _TitleRow extends StatelessWidget {
       ProtocolLoanState.liquidated => s.danger,
       ProtocolLoanState.unknown => s.inkFaint,
     };
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        Text(loan.ref,
-            style: AppTypography.sectionTitleOf(context).copyWith(color: s.ink)),
-        const SizedBox(width: AppSpacing.sm),
-        if (loan.role.isNotEmpty) ...[
-          TagChip(label: loan.role, color: s.inkSecondary),
-          const SizedBox(width: AppSpacing.xs),
-        ],
-        TagChip(label: loan.stateLabel, color: stateColor),
-        const Spacer(),
-        if (loan.pendingRequest != null)
-          const StatusBadge(
-            label: 'Your signature',
-            variant: BadgeVariant.accent,
-            dot: true,
+
+/// A small ring: how much of the term has run, as the one glance figure.
+class _TermRing extends StatelessWidget {
+  const _TermRing({required this.progress, required this.label, required this.color});
+  final double? progress;
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = AppScheme.of(context);
+    return Tooltip(
+      message: progress == null
+          ? 'The term has not started yet'
+          : 'Term run: ${(progress! * 100).round()}%',
+      child: SizedBox(
+        width: 44,
+        height: 44,
+        child: CustomPaint(
+          painter: _RingPainter(
+            progress: progress ?? 0,
+            track: s.panelInset,
+            fill: color,
           ),
-      ],
+          child: Center(
+            child: Text(
+              label,
+              style: AppTypography.caption.copyWith(
+                fontSize: 10.5,
+                fontWeight: FontWeight.w700,
+                color: s.inkSecondary,
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
+}
+
+class _RingPainter extends CustomPainter {
+  const _RingPainter({required this.progress, required this.track, required this.fill});
+  final double progress;
+  final Color track;
+  final Color fill;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const stroke = 4.0;
+    final rect = Offset.zero & size;
+    final r = rect.deflate(stroke / 2);
+    final base = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke
+      ..color = track;
+    canvas.drawArc(r, 0, math.pi * 2, false, base);
+    if (progress > 0) {
+      final p = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = stroke
+        ..strokeCap = StrokeCap.round
+        ..color = fill;
+      canvas.drawArc(r, -math.pi / 2, math.pi * 2 * progress.clamp(0.0, 1.0), false, p);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_RingPainter old) =>
+      old.progress != progress || old.track != track || old.fill != fill;
 }
 
 /// The site's one-line «what happens now», with a glyph for its kind.
@@ -189,32 +306,37 @@ class _NextLine extends StatelessWidget {
               ? 'request expires in ${left.inMinutes} min'
               : 'request expires in under a minute';
     }
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(top: 1),
-          child: Icon(icon, size: 18, color: tint),
-        ),
-        const SizedBox(width: AppSpacing.sm),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(action.label,
-                  style: AppTypography.body.copyWith(color: s.ink)),
-              if (expiry != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 2),
-                  child: Text(
-                    '${protocolActionLabel(p!.action)} · $expiry',
-                    style: AppTypography.caption.copyWith(color: s.inkSecondary),
-                  ),
-                ),
-            ],
+    return DataWell(
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.md, vertical: AppSpacing.sm + 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 1),
+            child: Icon(icon, size: 18, color: tint),
           ),
-        ),
-      ],
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(action.label,
+                    style: AppTypography.body
+                        .copyWith(color: s.ink, fontWeight: FontWeight.w600)),
+                if (expiry != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      '${protocolActionLabel(p!.action)} · $expiry',
+                      style: AppTypography.caption.copyWith(color: s.inkSecondary),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -247,6 +369,29 @@ class _TermBar extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        Row(
+          children: [
+            Icon(Icons.schedule_rounded, size: 14, color: s.inkFaint),
+            const SizedBox(width: AppSpacing.xs),
+            Expanded(
+              child: Text(leftText,
+                  style: AppTypography.caption.copyWith(color: s.inkFaint),
+                  overflow: TextOverflow.ellipsis),
+            ),
+            if (rightText.isNotEmpty) ...[
+              const SizedBox(width: AppSpacing.sm),
+              Text(rightText,
+                  key: const Key('loan-time-left'),
+                  style: AppTypography.caption.copyWith(
+                    color: progress != null && progress >= 1
+                        ? s.warning
+                        : s.inkSecondary,
+                    fontWeight: FontWeight.w600,
+                  )),
+            ],
+          ],
+        ),
+        const SizedBox(height: AppSpacing.xs),
         ClipRRect(
           borderRadius: BorderRadius.circular(3),
           child: SizedBox(
@@ -266,27 +411,6 @@ class _TermBar extends StatelessWidget {
             ),
           ),
         ),
-        const SizedBox(height: AppSpacing.xs),
-        Row(
-          children: [
-            Expanded(
-              child: Text(leftText,
-                  style: AppTypography.caption.copyWith(color: s.inkFaint),
-                  overflow: TextOverflow.ellipsis),
-            ),
-            if (rightText.isNotEmpty) ...[
-              const SizedBox(width: AppSpacing.sm),
-              Text(rightText,
-                  key: const Key('loan-time-left'),
-                  style: AppTypography.caption.copyWith(
-                    color: progress != null && progress >= 1
-                        ? s.warning
-                        : s.inkSecondary,
-                    fontWeight: FontWeight.w600,
-                  )),
-            ],
-          ],
-        ),
       ],
     );
   }
@@ -294,8 +418,165 @@ class _TermBar extends StatelessWidget {
   static String _g(int? n) => n == null ? '—' : protocolGroupDigits('$n');
 }
 
-/// Owed first and largest; principal, collateral, interest and the Templar
-/// fee as one quiet grid under it.
+/// Where the money sits, as arrows: collateral into the escrow, principal
+/// to the borrower, what closes the loan back to the lender. Read from the
+/// role, so a lender and a borrower see the same loan from their own side.
+class _FlowStrip extends StatelessWidget {
+  const _FlowStrip({required this.loan});
+  final ProtocolLoan loan;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = AppScheme.of(context);
+    final lender = loan.role == 'lender';
+    final you = 'You';
+    final other = lender ? 'Borrower' : 'Lender';
+    final closed = !loan.state.isOpen;
+    final rows = <_FlowRowData>[
+      if (loan.collateral != null)
+        _FlowRowData(
+          icon: Icons.lock_outline_rounded,
+          tint: s.warning,
+          from: lender ? other : you,
+          to: 'Escrow',
+          what: 'Collateral',
+          amount: loan.collateral!.display,
+          done: loan.state != ProtocolLoanState.originating,
+        ),
+      if (loan.principal != null)
+        _FlowRowData(
+          icon: Icons.payments_outlined,
+          tint: s.liquid,
+          from: lender ? you : other,
+          to: lender ? other : you,
+          what: 'Principal',
+          amount: loan.principal!.display,
+          done: loan.state != ProtocolLoanState.originating,
+        ),
+      if (loan.owed != null && !closed)
+        _FlowRowData(
+          icon: Icons.undo_rounded,
+          tint: s.accent,
+          from: lender ? other : you,
+          to: lender ? you : other,
+          what: lender ? 'Repayment due' : 'To repay',
+          amount: loan.owed!.display,
+          done: false,
+        ),
+      if (closed && loan.state == ProtocolLoanState.repaid && loan.owed != null)
+        _FlowRowData(
+          icon: Icons.check_rounded,
+          tint: s.success,
+          from: lender ? other : you,
+          to: lender ? you : other,
+          what: 'Repaid',
+          amount: loan.principal?.display ?? '',
+          done: true,
+        ),
+      if (closed &&
+          (loan.state == ProtocolLoanState.liquidated ||
+              loan.state == ProtocolLoanState.defaulted) &&
+          loan.collateral != null)
+        _FlowRowData(
+          icon: Icons.gavel_outlined,
+          tint: s.danger,
+          from: 'Escrow',
+          to: lender ? you : other,
+          what: 'Collateral claimed',
+          amount: loan.collateral!.display,
+          done: true,
+        ),
+    ];
+    if (rows.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (var i = 0; i < rows.length; i++) ...[
+          if (i > 0) const SizedBox(height: AppSpacing.xs),
+          _FlowRow(data: rows[i]),
+        ],
+      ],
+    );
+  }
+}
+
+class _FlowRowData {
+  const _FlowRowData({
+    required this.icon,
+    required this.tint,
+    required this.from,
+    required this.to,
+    required this.what,
+    required this.amount,
+    required this.done,
+  });
+  final IconData icon;
+  final Color tint;
+  final String from;
+  final String to;
+  final String what;
+  final String amount;
+
+  /// Already happened on chain (solid) or still ahead (dashed look).
+  final bool done;
+}
+
+class _FlowRow extends StatelessWidget {
+  const _FlowRow({required this.data});
+  final _FlowRowData data;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = AppScheme.of(context);
+    final d = data;
+    final faint = AppTypography.caption.copyWith(color: s.inkFaint);
+    final party = AppTypography.caption.copyWith(
+      color: s.ink,
+      fontWeight: FontWeight.w600,
+    );
+    return Row(
+      children: [
+        ListIconTile(icon: d.icon, tint: d.tint, size: 28),
+        const SizedBox(width: AppSpacing.sm),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(d.what, style: faint),
+              Row(
+                children: [
+                  Text(d.from, style: party),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    child: Icon(
+                      d.done ? Icons.arrow_forward_rounded : Icons.arrow_right_alt_rounded,
+                      size: 16,
+                      color: d.done ? d.tint : s.inkFaint,
+                    ),
+                  ),
+                  Text(d.to, style: party),
+                  if (!d.done) ...[
+                    const SizedBox(width: AppSpacing.xs),
+                    Text('pending', style: faint),
+                  ],
+                ],
+              ),
+            ],
+          ),
+        ),
+        Amount(
+          d.amount,
+          style: AppTypography.numericSmall.copyWith(
+            color: s.ink,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Owed first and largest; interest and the Templar fee as a quiet grid.
 class _Amounts extends StatelessWidget {
   const _Amounts({required this.loan});
   final ProtocolLoan loan;

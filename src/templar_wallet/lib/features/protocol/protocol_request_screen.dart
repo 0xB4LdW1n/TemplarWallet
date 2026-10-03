@@ -12,11 +12,14 @@ import '../../app/routes.dart';
 import '../../bridge/bridge_provider.dart';
 import '../../bridge/wallet_bridge.dart';
 import '../../shared/widgets/app_password_gate.dart';
+import '../../shared/widgets/badges.dart';
 import '../../shared/widgets/banners.dart';
 import '../../shared/widgets/buttons.dart';
 import '../../shared/widgets/cards.dart';
 import '../../shared/widgets/code_box.dart';
+import '../../shared/widgets/expander.dart';
 import '../../shared/widgets/hybrid_kit.dart';
+import '../../shared/widgets/list_rows.dart';
 import '../../shared/widgets/page_header.dart';
 import '../../services/protocol_portfolio_service.dart';
 import '../../services/protocol_store.dart';
@@ -40,13 +43,14 @@ import 'protocol_network_mismatch_card.dart';
 /// site (docs/connector-protocol.md §3–§4 in the Templar Protocol repository).
 ///
 /// Lives outside the wallet shell so a link can be answered before any
-/// wallet is open: the screen asks for one when needed, and for the vault
-/// passphrase when storage is locked. It fetches the request, validates it
-/// (network, origin, transport, expiry), shows what will leave the wallet
-/// next to what the site claims, and only after an explicit confirmation
-/// plus the app password does it sign and POST the answer. The PSET is
-/// never stored and never broadcast from here — the site combines and
-/// broadcasts (it is the facilitator, not the custodian).
+/// wallet is open: the screen always asks which wallet answers (with the
+/// one connected to this site put first), and for the vault passphrase when
+/// storage is locked. It fetches the request, validates it (network, origin,
+/// transport, expiry), shows what will leave the wallet next to what the
+/// site claims, and only after an explicit confirmation plus the app
+/// password does it sign and POST the answer. The PSET is never stored and
+/// never broadcast from here — the site combines and broadcasts (it is the
+/// facilitator, not the custodian).
 class ProtocolRequestScreen extends StatefulWidget {
   const ProtocolRequestScreen({super.key, this.rawLink});
 
@@ -82,19 +86,30 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
   /// asset id the mismatch card prefills.
   LiquidNetworkInfo? _netInfo;
 
-  /// Wallet the request is answered with. Chosen here, not assumed: a link
-  /// may arrive with another wallet open, or none.
+  /// Wallet the request is answered with. Chosen here, never assumed: a
+  /// link may arrive with another wallet open, or none — and two sites on
+  /// the same machine may each know a different wallet.
   WalletSummary? _wallet;
   List<WalletSummary> _wallets = const [];
 
   /// The wallet Settings › Templar Protocol names, when it can answer this
-  /// request. Shown first in the chooser; it never removes the choice.
+  /// request. Shown first in the chooser after the site's own wallet; it
+  /// never removes the choice.
   String? _preferredWalletId;
+
+  /// Wallets this device has connected to the requesting site before
+  /// (`ProtocolStore`): the chooser leads with them, since a signing request
+  /// from a site is almost always for the wallet that site knows.
+  Set<String> _connectedWalletIds = const {};
 
   // Connect: what will be shared.
   String? _ctDescriptor;
   String? _escrowXpub;
   String? _receiveAddress;
+
+  /// Connect: the small checkbox that puts Loans in the main menu once the
+  /// site has taken the wallet. Shown only while it is not there yet.
+  bool _addLoans = false;
 
   // Sign: the wallet's own reading of the PSET.
   PsetInspection? _inspection;
@@ -127,7 +142,6 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
       _start(widget.rawLink!);
     }
   }
-
 
   static String _clean(Object e) => e
       .toString()
@@ -162,6 +176,7 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
       _ctDescriptor = null;
       _escrowXpub = null;
       _receiveAddress = null;
+      _addLoans = false;
     });
     ProtocolRequest? fetched;
     try {
@@ -293,34 +308,44 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
   /// the preferred wallet from (models/protocol_wallet_fit.dart).
   bool _eligible(WalletSummary w) => protocolWalletFits(w, connect: _isConnect);
 
+  /// Loads the wallets and shows the chooser. Always: a request is answered
+  /// with the wallet the user names, never with whichever happens to be
+  /// open — two sites on one machine may each know a different wallet, and
+  /// a signature from the wrong one is a refusal on the site and a puzzle
+  /// here. The one connected to this site leads the list.
   Future<void> _pickWallet() async {
     final wallets = await _bridge.listWallets();
     final preferredId = await ProtocolStore.instance.preferredWalletId();
+    final origin = _link?.url.origin ?? '';
+    final sites = await ProtocolStore.instance.sites();
     if (!mounted) return;
-    final appState = context.read<AppState>();
-    final activeId = appState.activeWalletId;
-    final active = wallets.where((w) => w.id == activeId).firstOrNull;
     final preferred = wallets.where((w) => w.id == preferredId).firstOrNull;
     setState(() {
       _wallets = wallets;
-      _preferredWalletId = preferred != null && _eligible(preferred)
-          ? preferred.id
-          : null;
+      _preferredWalletId =
+          preferred != null && _eligible(preferred) ? preferred.id : null;
+      _connectedWalletIds = {
+        for (final s in sites)
+          if (s.origin == origin) s.walletId,
+      };
+      _phase = _Phase.chooseWallet;
     });
-    // A sign request is answered without asking: by the wallet named in
-    // Settings › Templar Protocol if there is one, else by the open wallet when
-    // it qualifies. Connect always shows the choice — it decides which wallet
-    // the site will know from now on.
-    if (!_isConnect) {
-      final signer = (preferred != null && _eligible(preferred))
-          ? preferred
-          : (active != null && _eligible(active) ? active : null);
-      if (signer != null) {
-        await _useWallet(signer);
-        return;
-      }
-    }
-    if (mounted) setState(() => _phase = _Phase.chooseWallet);
+  }
+
+  /// Back to the chooser from the review: the wallet was the wrong one (its
+  /// key is not in the PSET), or the user changed their mind.
+  void _changeWallet() {
+    setState(() {
+      _phase = _Phase.chooseWallet;
+      _error = null;
+      _busy = false;
+      _wallet = null;
+      _inspection = null;
+      _proofVerdict = null;
+      _ctDescriptor = null;
+      _escrowXpub = null;
+      _receiveAddress = null;
+    });
   }
 
   Future<void> _useWallet(WalletSummary w) async {
@@ -468,6 +493,9 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
     if (reply != null) {
       await _recordConnect(
           ProtocolConnectedSite.portfolioFromReply(reply['portfolio']));
+      if (_addLoans && mounted) {
+        await context.read<AppState>().setLoansInMenu(true);
+      }
     }
   }
 
@@ -694,6 +722,8 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
     context.go(hasWallet ? AppRoutes.dashboard : AppRoutes.walletPicker);
   }
 
+  void _openLoans() => context.go(AppRoutes.loans);
+
   // ── UI ─────────────────────────────────────────────────────────────────────
 
   @override
@@ -705,8 +735,12 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
       null => 'Templar Protocol',
     };
     final subtitle = req != null
-        ? '${req.site} · ${protocolNetworkLabel(req.network)}'
+        ? '${req.site} · ${_link?.origin ?? req.callback.host} · ${protocolNetworkLabel(req.network)}'
         : 'A site is asking this wallet to take part in a loan.';
+    final canChangeWallet = _wallet != null &&
+        _wallets.length > 1 &&
+        (_phase == _Phase.review || _phase == _Phase.error) &&
+        !_busy;
 
     return Scaffold(
       body: PageBackground.flat(
@@ -720,6 +754,13 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
                   title: title,
                   subtitle: subtitle,
                   actions: [
+                    if (canChangeWallet)
+                      GhostButton(
+                        key: const Key('protocol-change-wallet'),
+                        label: 'Change wallet',
+                        icon: Icons.swap_horiz_rounded,
+                        onPressed: _changeWallet,
+                      ),
                     GhostButton(
                       label: _phase == _Phase.done ? 'Close' : 'Cancel',
                       icon: Icons.close,
@@ -767,7 +808,10 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
             wallets: _wallets,
             eligible: _eligible,
             connect: _isConnect,
+            siteName: _request?.site ?? _link?.url.host ?? 'the site',
             preferredWalletId: _preferredWalletId,
+            activeWalletId: context.read<AppState>().activeWalletId,
+            connectedWalletIds: _connectedWalletIds,
             onPick: _useWallet,
           ),
         _Phase.review => _isConnect ? _connectReview() : _signReview(),
@@ -777,23 +821,36 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
             next: _nextUrl,
             onOpen: _openNext,
             onClose: _leave,
+            onOpenLoans: _isConnect && context.read<AppState>().loansInMenu
+                ? _openLoans
+                : null,
           ),
       };
+
+  // ── Connect review ─────────────────────────────────────────────────────────
 
   Widget _connectReview() {
     final req = _request!;
     final w = _wallet!;
+    final s = AppScheme.of(context);
+    final loansInMenu = context.watch<AppState>().loansInMenu;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        InfoBanner(
-          title: 'What ${req.site} will receive',
-          message: 'A watch-only view of "${w.name}" on ${protocolNetworkLabel(req.network)}: '
-              'the site can see this wallet\'s Liquid balance and history and '
-              'build loan transactions for it. It cannot spend. The escrow key '
-              'is a separate account below your seed, used only inside loan '
-              'contracts.',
+        _ActionHeader(
+          icon: Icons.link_rounded,
+          tint: s.liquid,
+          title: 'Share a view of "${w.name}" with ${req.site}',
+          subtitle: 'The site will see this wallet\'s Liquid balance and history and '
+              'build loan transactions for it. It cannot spend: every signature '
+              'happens here, after you confirm.',
+          chips: [
+            TagChip(label: protocolNetworkLabel(req.network), color: s.liquid),
+            TagChip(label: w.isHardwareWallet ? 'Jade' : 'software seed', color: s.inkSecondary),
+          ],
         ),
+        const SizedBox(height: AppSpacing.lg),
+        _ShareFlow(site: req.site, walletName: w.name),
         const SizedBox(height: AppSpacing.lg),
         FormCard(
           title: 'Shared with ${req.site}',
@@ -819,7 +876,6 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
             ],
           ),
         ),
-        const SizedBox(height: AppSpacing.lg),
         if (req.challenge != null) ...[
           const SizedBox(height: AppSpacing.lg),
           _ProofCard(
@@ -845,6 +901,13 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
           title: 'Sent to',
           child: CopyRow(label: 'Callback', value: req.callback.toString()),
         ),
+        if (!loansInMenu) ...[
+          const SizedBox(height: AppSpacing.lg),
+          _LoansOptIn(
+            value: _addLoans,
+            onChanged: (v) => setState(() => _addLoans = v),
+          ),
+        ],
         const SizedBox(height: AppSpacing.xl),
         if (_error != null) ...[
           DangerBanner(message: _error!),
@@ -860,6 +923,8 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
       ],
     );
   }
+
+  // ── Sign review ────────────────────────────────────────────────────────────
 
   /// Action `proof` (§9.2 / §9.5): the dedicated review. The verdict leads;
   /// the challenge, the origin and the expiry are shown as the site sent
@@ -877,6 +942,18 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        _ActionHeader(
+          icon: Icons.verified_user_outlined,
+          tint: v.isCheck ? s.liquid : s.danger,
+          title: 'Prove that "${w.name}" holds its loan key',
+          subtitle: 'A signature on a check that can never be broadcast: it spends '
+              'no coin and pays nobody. $kProtocolProofStatement.',
+          chips: [
+            TagChip(label: 'proof of key', color: s.liquid),
+            TagChip(label: protocolNetworkLabel(req.network), color: s.inkSecondary),
+          ],
+        ),
+        const SizedBox(height: AppSpacing.lg),
         if (!v.isCheck)
           DangerBanner(
             title: 'Refusing to sign this',
@@ -887,11 +964,11 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
           )
         else
           InfoBanner(
-            title: kProtocolProofStatement,
-            message: 'What you sign is a check that can never be broadcast: it '
-                'spends no coin, pays nobody and carries the line below. It '
-                'proves to $origin that "${w.name}" holds its loan key, so the '
-                'site can show you your loans again.',
+            title: 'The check is genuine',
+            message: 'The engine rebuilt it from the line below and this wallet\'s '
+                'loan key; the site\'s PSET is that check, byte for byte. It '
+                'proves to $origin that "${w.name}" holds the key, so the site '
+                'can show you your loans again.',
           ),
         const SizedBox(height: AppSpacing.lg),
         _ProofCard(
@@ -901,40 +978,24 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
           walletName: w.name,
           keyFingerprint: v.loanKeyFingerprint,
           title: 'What you are signing',
-          body: v.isCheck
-              ? 'The engine rebuilt the check from this line and this wallet\'s '
-                  'loan key, and the site\'s PSET is that check, byte for byte.'
-              : null,
         ),
         const SizedBox(height: AppSpacing.lg),
-        LayoutBuilder(builder: (context, c) {
-          final wide = c.maxWidth >= 760;
-          final site = _SiteSummaryPanel(request: req);
-          final wallet = _WalletViewPanel(inspection: i, walletName: w.name);
-          if (wide) {
-            return Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(child: site),
-                const SizedBox(width: AppSpacing.lg),
-                Expanded(child: wallet),
-              ],
-            );
-          }
-          return Column(children: [site, const SizedBox(height: AppSpacing.lg), wallet]);
-        }),
+        _NetChangeCard(inspection: i, walletName: w.name),
         const SizedBox(height: AppSpacing.lg),
-        SummaryCard(
-          title: 'Request',
-          rows: [
-            (label: 'Site', value: req.site, isMono: false),
-            (label: 'Action', value: req.actionLabel, isMono: false),
-            (label: 'Request id', value: req.id ?? '', isMono: true),
-            (label: 'Network', value: protocolNetworkLabel(req.network), isMono: false),
-            (label: 'Wallet', value: w.name, isMono: false),
-            (label: 'Callback', value: req.callback.toString(), isMono: true),
-            (label: 'Expires', value: req.expiresAtTime.toLocal().toString(), isMono: false),
-          ],
+        ExpanderCard(
+          key: const Key('protocol-technical-details'),
+          title: 'Technical details',
+          subtitle: 'The request, and the wallet\'s raw reading of the check.',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _RequestRows(request: req, walletName: w.name),
+              const SizedBox(height: AppSpacing.lg),
+              _SiteSaysCard(request: req, compact: true),
+              const SizedBox(height: AppSpacing.lg),
+              _RawReading(inspection: i, walletName: w.name),
+            ],
+          ),
         ),
         const SizedBox(height: AppSpacing.xl),
         if (_error != null) ...[
@@ -959,6 +1020,10 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
     );
   }
 
+  /// Every other action: what this does to the wallet (the net change the
+  /// engine computed), where the money goes (the outputs, as a flow), what
+  /// the site says it is (its own lines, to compare), and the raw reading
+  /// under a fold. One column, read top to bottom.
   Widget _signReview() {
     final req = _request!;
     if (req.isProof) return _proofReview();
@@ -966,74 +1031,82 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
     final i = _inspection!;
     final ours = i.ourInputs;
     final s = AppScheme.of(context);
+    final role = req.summary?.role ?? '';
+    final loanRef = req.loanRef ?? '';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        _ActionHeader(
+          icon: _actionIcon(req.action),
+          tint: s.accent,
+          title: req.actionLabel,
+          subtitle: [
+            if (loanRef.isNotEmpty) 'Loan $loanRef',
+            if (role.isNotEmpty) 'you are the $role',
+            'signed with "${w.name}"',
+          ].join(' · '),
+          chips: [
+            TagChip(label: req.site, color: s.accent),
+            TagChip(label: protocolNetworkLabel(req.network), color: s.liquid),
+            if (i.touchesEscrow) TagChip(label: 'loan escrow', color: s.warning),
+          ],
+        ),
+        const SizedBox(height: AppSpacing.lg),
         if (ours.isEmpty)
-          const WarningBanner(
+          WarningBanner(
             title: 'Nothing here is for this wallet to sign',
-            message: 'None of the inputs names a key of the open wallet. Either '
-                'the site sent this request to the wrong wallet, or the wallet '
-                'that took part in the loan is a different one. Open that wallet '
-                'and try the link again.',
+            message: 'None of the inputs names a key of "${w.name}". Either the '
+                'site sent this request to the wrong wallet, or the wallet that '
+                'took part in the loan is a different one — pick it with '
+                '"Change wallet" above.',
+            action: _wallets.length > 1
+                ? GhostButton(
+                    label: 'Change wallet',
+                    icon: Icons.swap_horiz_rounded,
+                    onPressed: _changeWallet,
+                  )
+                : null,
           )
         else
           InfoBanner(
-            title: 'Compare both sides before signing',
-            message: 'Left is what ${req.site} says this transaction does. Right is '
-                'what the wallet reads from the transaction itself. Sign only if '
-                'they agree — the site cannot change what the wallet sees.',
+            title: 'Read it top to bottom',
+            message: 'First what changes for this wallet, then where every coin '
+                'goes — both read by the wallet from the transaction itself. '
+                'Then what ${req.site} says it is. Sign only if they agree; the '
+                'site cannot change what the wallet sees.',
           ),
         const SizedBox(height: AppSpacing.lg),
-        LayoutBuilder(builder: (context, c) {
-          final wide = c.maxWidth >= 760;
-          final site = _SiteSummaryPanel(request: req);
-          final wallet = _WalletViewPanel(inspection: i, walletName: w.name);
-          if (wide) {
-            return Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(child: site),
-                const SizedBox(width: AppSpacing.lg),
-                Expanded(child: wallet),
-              ],
-            );
-          }
-          return Column(children: [site, const SizedBox(height: AppSpacing.lg), wallet]);
-        }),
+        _NetChangeCard(inspection: i, walletName: w.name),
         const SizedBox(height: AppSpacing.lg),
-        SummaryCard(
-          title: 'Request',
-          rows: [
-            (label: 'Site', value: req.site, isMono: false),
-            (label: 'Action', value: req.actionLabel, isMono: false),
-            if (req.loanRef != null && req.loanRef!.isNotEmpty)
-              (label: 'Loan', value: req.loanRef!, isMono: true),
-            (label: 'Request id', value: req.id ?? '', isMono: true),
-            (label: 'Network', value: protocolNetworkLabel(req.network), isMono: false),
-            (label: 'Wallet', value: w.name, isMono: false),
-            (label: 'Callback', value: req.callback.toString(), isMono: true),
-            (label: 'Expires', value: req.expiresAtTime.toLocal().toString(), isMono: false),
-          ],
-        ),
-        if (req.escrow != null && req.escrow!.address.isNotEmpty) ...[
-          const SizedBox(height: AppSpacing.lg),
-          FormCard(
-            title: 'Escrow contract named by the site',
-            subtitle: 'Shown as the site describes it. The wallet\'s view on the '
-                'right is what actually gets signed.',
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
+        _FlowCard(inspection: i),
+        const SizedBox(height: AppSpacing.lg),
+        _SiteSaysCard(request: req),
+        const SizedBox(height: AppSpacing.lg),
+        ExpanderCard(
+          key: const Key('protocol-technical-details'),
+          title: 'Technical details',
+          subtitle: 'Request ids, every input and output as the wallet reads them, '
+              'the escrow contract.',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _RequestRows(request: req, walletName: w.name),
+              const SizedBox(height: AppSpacing.lg),
+              _RawReading(inspection: i, walletName: w.name),
+              if (req.escrow != null && req.escrow!.address.isNotEmpty) ...[
+                const SizedBox(height: AppSpacing.lg),
+                Text('Escrow contract named by the site',
+                    style: AppTypography.sectionTitle),
+                const SizedBox(height: AppSpacing.sm),
                 CopyRow(label: 'Address', value: req.escrow!.address),
                 if (req.escrow!.descriptor.isNotEmpty) ...[
                   const SizedBox(height: AppSpacing.md),
                   CodeBox(label: 'Descriptor', value: req.escrow!.descriptor),
                 ],
               ],
-            ),
+            ],
           ),
-        ],
+        ),
         const SizedBox(height: AppSpacing.xl),
         if (_error != null) ...[
           DangerBanner(message: _error!),
@@ -1046,7 +1119,7 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
         ),
         const SizedBox(height: AppSpacing.md),
         ProtocolConfirmGate(
-          statement: 'I compared the site\'s summary with the wallet\'s reading and they describe the same transaction.',
+          statement: 'I compared what the wallet reads with what the site says, and they describe the same transaction.',
           buttonLabel: 'Sign and send to ${req.site}',
           busy: _busy,
           enabled: ours.isNotEmpty,
@@ -1057,7 +1130,614 @@ class _ProtocolRequestScreenState extends State<ProtocolRequestScreen> {
   }
 }
 
+IconData _actionIcon(String? action) => switch (action) {
+      'origination' => Icons.handshake_outlined,
+      'repayment' => Icons.payments_outlined,
+      'installment' => Icons.event_repeat_rounded,
+      'default' => Icons.gavel_outlined,
+      'liquidation' => Icons.gavel_outlined,
+      'swap' => Icons.swap_horiz_rounded,
+      'proof' => Icons.verified_user_outlined,
+      _ => Icons.draw_outlined,
+    };
+
 // ── Pieces ────────────────────────────────────────────────────────────────────
+
+/// The one-glance head of a review: a big glyph for what this is, the title,
+/// one sentence, and the chips that place it (site, network, role).
+class _ActionHeader extends StatelessWidget {
+  const _ActionHeader({
+    required this.icon,
+    required this.tint,
+    required this.title,
+    required this.subtitle,
+    this.chips = const [],
+  });
+  final IconData icon;
+  final Color tint;
+  final String title;
+  final String subtitle;
+  final List<Widget> chips;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = AppScheme.of(context);
+    final phone = AppLayout.isPhone(context);
+    return FormCard(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ListIconTile(icon: icon, tint: tint, size: phone ? 48 : 56),
+          const SizedBox(width: AppSpacing.lg),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: AppTypography.sectionTitleOf(context).copyWith(color: s.ink)),
+                const SizedBox(height: AppSpacing.xs),
+                Text(subtitle,
+                    style: AppTypography.bodySmall.copyWith(color: s.inkSecondary)),
+                if (chips.isNotEmpty) ...[
+                  const SizedBox(height: AppSpacing.sm),
+                  Wrap(spacing: AppSpacing.xs, runSpacing: AppSpacing.xs, children: chips),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Connect, as a picture: what goes to the site and what stays here.
+class _ShareFlow extends StatelessWidget {
+  const _ShareFlow({required this.site, required this.walletName});
+  final String site;
+  final String walletName;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = AppScheme.of(context);
+    Widget tile(IconData icon, Color tint, String title, String body) => Expanded(
+          child: DataWell(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ListIconTile(icon: icon, tint: tint, size: 32),
+                const SizedBox(height: AppSpacing.sm),
+                Text(title,
+                    style: AppTypography.body
+                        .copyWith(color: s.ink, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 2),
+                Text(body, style: AppTypography.caption.copyWith(color: s.inkSecondary)),
+              ],
+            ),
+          ),
+        );
+    final arrow = Padding(
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
+      child: Icon(Icons.arrow_forward_rounded, color: s.inkFaint),
+    );
+    return FormCard(
+      title: 'What leaves this computer, and what never does',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              tile(Icons.visibility_outlined, s.liquid, 'A view',
+                  'Watch-only descriptor, loan key, one address → $site'),
+              arrow,
+              tile(Icons.language_rounded, s.accent, site,
+                  'Sees balances and history; builds each loan transaction'),
+              arrow,
+              tile(Icons.draw_outlined, s.liquid, 'Your signature',
+                  'Every step comes back here to be read and signed by you'),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.md),
+          Row(
+            children: [
+              Icon(Icons.lock_outline_rounded, size: 16, color: s.success),
+              const SizedBox(width: AppSpacing.xs),
+              Expanded(
+                child: Text(
+                  'Stays here: the seed of "$walletName" and every private key. '
+                  'The escrow key is its own account below the seed, used only in loans.',
+                  style: AppTypography.caption.copyWith(color: s.inkSecondary),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The checkbox a connect offers: put Loans in the main menu.
+class _LoansOptIn extends StatelessWidget {
+  const _LoansOptIn({required this.value, required this.onChanged});
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = AppScheme.of(context);
+    return FormCard(
+      padding: const EdgeInsets.fromLTRB(
+          AppSpacing.sm, AppSpacing.xs, AppSpacing.lg, AppSpacing.xs),
+      child: Material(
+        type: MaterialType.transparency,
+        child: CheckboxListTile(
+          key: const Key('protocol-add-loans'),
+          contentPadding: EdgeInsets.zero,
+          controlAffinity: ListTileControlAffinity.leading,
+          activeColor: AppColors.accent,
+          value: value,
+          onChanged: (v) => onChanged(v ?? false),
+          title: Text('Add Loans to the menu',
+              style: AppTypography.body.copyWith(color: s.ink)),
+          subtitle: Text(
+            'A Loans page beside the Dashboard with this site\'s loans, payments '
+            'and pending signatures. You can switch it off in Settings › Templar Protocol.',
+            style: AppTypography.caption.copyWith(color: s.inkSecondary),
+          ),
+          secondary: ListIconTile(icon: Icons.handshake_outlined, tint: s.liquid, size: 32),
+        ),
+      ),
+    );
+  }
+}
+
+/// What the signature does to this wallet, in one figure per asset: the net
+/// change the engine computed from its own unblinding — the one number a
+/// PSET cannot misstate. Green comes in, amber goes out.
+class _NetChangeCard extends StatelessWidget {
+  const _NetChangeCard({required this.inspection, required this.walletName});
+  final PsetInspection inspection;
+  final String walletName;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = AppScheme.of(context);
+    final lines = inspection.netChangeLines;
+    return FormCard(
+      title: 'What changes for "$walletName"',
+      subtitle: 'Read by the wallet from the transaction itself, not from the site.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (inspection.hasUnverifiedOutputs)
+            const Padding(
+              padding: EdgeInsets.only(bottom: AppSpacing.md),
+              child: DangerBanner(
+                message: 'An output claims an amount or asset its commitment does not '
+                    'prove. The engine will not sign this.',
+              ),
+            ),
+          if (lines.isEmpty)
+            Row(
+              children: [
+                ListIconTile(icon: Icons.remove_rounded, tint: s.inkFaint, size: 36),
+                const SizedBox(width: AppSpacing.md),
+                Expanded(
+                  child: Text(
+                    'Nothing of this wallet\'s moves. The signature only unlocks the '
+                    'escrow for the other party, or proves a key.',
+                    style: AppTypography.body.copyWith(color: s.inkSecondary),
+                  ),
+                ),
+              ],
+            )
+          else
+            for (var i = 0; i < lines.length; i++) ...[
+              if (i > 0) Divider(height: AppSpacing.lg, color: s.edge),
+              _NetChangeRow(line: lines[i]),
+            ],
+          const SizedBox(height: AppSpacing.md),
+          Row(
+            children: [
+              Icon(Icons.local_gas_station_outlined, size: 14, color: s.inkFaint),
+              const SizedBox(width: AppSpacing.xs),
+              Text('Network fee ${inspection.feeDisplay}',
+                  style: AppTypography.caption.copyWith(color: s.inkFaint)),
+              const Spacer(),
+              Text(
+                '${inspection.sigsHave} of ${inspection.sigsNeeded} signatures on the least-signed input',
+                style: AppTypography.caption.copyWith(color: s.inkFaint),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _NetChangeRow extends StatelessWidget {
+  const _NetChangeRow({required this.line});
+  final PsetNetChange line;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = AppScheme.of(context);
+    final incoming = line.isIncoming;
+    final tint = incoming ? s.success : s.warning;
+    return Row(
+      children: [
+        ListIconTile(
+          icon: incoming ? Icons.south_west_rounded : Icons.north_east_rounded,
+          tint: tint,
+          size: 36,
+        ),
+        const SizedBox(width: AppSpacing.md),
+        Expanded(
+          child: Text(
+            incoming ? 'Comes into this wallet' : 'Leaves this wallet',
+            style: AppTypography.body.copyWith(color: s.inkSecondary),
+          ),
+        ),
+        Text(
+          line.displayAmount,
+          style: AppTypography.numericLarge.copyWith(
+            color: tint,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Where every coin goes, as a flow: what feeds the transaction on top,
+/// then one row per output with a glyph for its destination — back to this
+/// wallet, into the loan escrow, to the other party, the network fee.
+class _FlowCard extends StatelessWidget {
+  const _FlowCard({required this.inspection});
+  final PsetInspection inspection;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = AppScheme.of(context);
+    final i = inspection;
+    final ownCoins = i.inputs.where((x) => x.isOurs && !x.isScriptHash).length;
+    final ownEscrow = i.inputs.where((x) => x.isOurs && x.isScriptHash).length;
+    final others = i.inputs.where((x) => !x.isOurs).length;
+    final sources = <Widget>[
+      if (ownCoins > 0)
+        _SourceChip(
+          icon: Icons.account_balance_wallet_outlined,
+          tint: s.liquid,
+          label: '$ownCoins of your coin${ownCoins == 1 ? '' : 's'}',
+        ),
+      if (ownEscrow > 0)
+        _SourceChip(
+          icon: Icons.lock_open_rounded,
+          tint: s.accent,
+          label: 'the loan escrow · your key',
+        ),
+      if (others > 0)
+        _SourceChip(
+          icon: Icons.person_outline_rounded,
+          tint: s.inkSecondary,
+          label: '$others input${others == 1 ? '' : 's'} from others',
+        ),
+    ];
+    return FormCard(
+      title: 'Where the money goes',
+      subtitle: 'Every output of the transaction, classified by the wallet.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('FROM',
+              style: AppTypography.navSection.copyWith(color: s.inkFaint, letterSpacing: 1.2)),
+          const SizedBox(height: AppSpacing.xs),
+          Wrap(spacing: AppSpacing.sm, runSpacing: AppSpacing.xs, children: sources),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
+            child: Row(
+              children: [
+                const SizedBox(width: 10),
+                Icon(Icons.arrow_downward_rounded, size: 18, color: s.inkFaint),
+              ],
+            ),
+          ),
+          Text('TO',
+              style: AppTypography.navSection.copyWith(color: s.inkFaint, letterSpacing: 1.2)),
+          const SizedBox(height: AppSpacing.xs),
+          for (var k = 0; k < i.outputs.length; k++) ...[
+            if (k > 0) Divider(height: AppSpacing.md, color: s.edge),
+            _OutputRow(output: i.outputs[k]),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _SourceChip extends StatelessWidget {
+  const _SourceChip({required this.icon, required this.tint, required this.label});
+  final IconData icon;
+  final Color tint;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = AppScheme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm + 2, vertical: 6),
+      decoration: BoxDecoration(
+        color: s.panelInset,
+        borderRadius: BorderRadius.circular(AppSpacing.radiusSm + 2),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 15, color: tint),
+          const SizedBox(width: 6),
+          Text(label, style: AppTypography.caption.copyWith(color: s.ink)),
+        ],
+      ),
+    );
+  }
+}
+
+class _OutputRow extends StatelessWidget {
+  const _OutputRow({required this.output});
+  final PsetOutput output;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = AppScheme.of(context);
+    final o = output;
+    final (icon, tint, label) = switch (o.kind) {
+      'own' => (Icons.account_balance_wallet_outlined, s.liquid, 'Back to this wallet'),
+      'escrow' => (Icons.lock_outline_rounded, s.accent, 'Into the loan escrow'),
+      'fee' => (Icons.local_gas_station_outlined, s.inkFaint, 'Network fee'),
+      _ => (Icons.person_outline_rounded, AppColors.warning, 'To someone else'),
+    };
+    final addr = o.address;
+    final amount = o.unverified
+        ? 'unverified'
+        : (o.displayAmount ?? (o.ticker != null ? 'blinded (${o.ticker})' : 'blinded'));
+    return Row(
+      children: [
+        ListIconTile(icon: icon, tint: tint, size: 36),
+        const SizedBox(width: AppSpacing.md),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: AppTypography.body.copyWith(color: s.ink)),
+              if (addr != null && addr.isNotEmpty)
+                Text(_short(addr),
+                    style: AppTypography.monoSmall.copyWith(color: s.inkFaint)),
+            ],
+          ),
+        ),
+        Text(
+          amount,
+          style: AppTypography.numericSmall.copyWith(
+            color: o.unverified ? s.danger : s.ink,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ],
+    );
+  }
+
+  static String _short(String a) =>
+      a.length <= 22 ? a : '${a.substring(0, 12)}…${a.substring(a.length - 8)}';
+}
+
+/// The site's own description, to compare with the wallet's reading above
+/// — never instead of it.
+class _SiteSaysCard extends StatelessWidget {
+  const _SiteSaysCard({required this.request, this.compact = false});
+  final ProtocolRequest request;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = AppScheme.of(context);
+    final summary = request.summary;
+    final body = summary == null || summary.lines.isEmpty
+        ? Text('The site sent no summary.',
+            style: AppTypography.caption.copyWith(color: s.inkSecondary))
+        : Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (summary.role.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                  child: TagChip(label: 'Your role: ${summary.role}', color: s.accent),
+                ),
+              for (final line in summary.lines)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.chat_bubble_outline_rounded, size: 14, color: s.inkFaint),
+                      const SizedBox(width: AppSpacing.sm),
+                      Expanded(
+                        child: Text(line.label,
+                            style: AppTypography.bodySmall.copyWith(color: s.inkSecondary)),
+                      ),
+                      const SizedBox(width: AppSpacing.sm),
+                      Text(line.amount,
+                          style: AppTypography.numericSmall
+                              .copyWith(color: s.ink, fontWeight: FontWeight.w600)),
+                    ],
+                  ),
+                ),
+            ],
+          );
+    if (compact) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('What ${request.site} says', style: AppTypography.sectionTitle),
+          const SizedBox(height: AppSpacing.sm),
+          body,
+        ],
+      );
+    }
+    return RailPanel(
+      title: 'What ${request.site} says',
+      rail: s.accent,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          body,
+          const SizedBox(height: AppSpacing.sm),
+          Text(
+            'The site\'s own words. Compare them with the two cards above: the '
+            'figures there come from the transaction, and the site cannot change them.',
+            style: AppTypography.caption.copyWith(color: s.inkFaint),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Request ids and addresses, for the technical fold.
+class _RequestRows extends StatelessWidget {
+  const _RequestRows({required this.request, required this.walletName});
+  final ProtocolRequest request;
+  final String walletName;
+
+  @override
+  Widget build(BuildContext context) {
+    final req = request;
+    return SummaryCard(
+      title: 'Request',
+      rows: [
+        (label: 'Site', value: req.site, isMono: false),
+        (label: 'Action', value: req.actionLabel, isMono: false),
+        if (req.loanRef != null && req.loanRef!.isNotEmpty)
+          (label: 'Loan', value: req.loanRef!, isMono: true),
+        (label: 'Request id', value: req.id ?? '', isMono: true),
+        (label: 'Network', value: protocolNetworkLabel(req.network), isMono: false),
+        (label: 'Wallet', value: walletName, isMono: false),
+        (label: 'Callback', value: req.callback.toString(), isMono: true),
+        (label: 'Expires', value: req.expiresAtTime.toLocal().toString(), isMono: false),
+      ],
+    );
+  }
+}
+
+/// Every input and output as the wallet reads them — outpoints, keys,
+/// signatures, addresses. The evidence behind the cards above.
+class _RawReading extends StatelessWidget {
+  const _RawReading({required this.inspection, required this.walletName});
+  final PsetInspection inspection;
+  final String walletName;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = AppScheme.of(context);
+    final i = inspection;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('What "$walletName" reads', style: AppTypography.sectionTitle),
+        const SizedBox(height: AppSpacing.sm),
+        Text('Inputs (${i.inputs.length})', style: AppTypography.label.copyWith(color: s.inkSecondary)),
+        const SizedBox(height: AppSpacing.sm),
+        for (final inp in i.inputs)
+          Padding(
+            padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+            child: DataWell(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      TagChip(
+                        label: inp.isOurs
+                            ? (inp.isScriptHash ? 'escrow · your key' : 'your coin')
+                            : (inp.isScriptHash ? 'contract · not yours' : 'not yours'),
+                        color: inp.isOurs ? s.liquid : s.inkFaint,
+                      ),
+                      const Spacer(),
+                      Text(
+                        inp.displayAmount ??
+                            (inp.ticker != null ? 'blinded (${inp.ticker})' : 'blinded'),
+                        style: AppTypography.numericSmall.copyWith(
+                          fontWeight: FontWeight.w700,
+                          color: s.ink,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: AppSpacing.xs),
+                  KvRow(label: 'Outpoint', value: inp.outpoint),
+                  if (inp.keyFingerprints.isNotEmpty)
+                    KvRow(label: 'Keys', value: inp.keyFingerprints.join(', ')),
+                  if (inp.signedBy.isNotEmpty)
+                    KvRow(label: 'Signed by', value: inp.signedBy.join(', ')),
+                ],
+              ),
+            ),
+          ),
+        const SizedBox(height: AppSpacing.md),
+        Text('Outputs (${i.outputs.length})', style: AppTypography.label.copyWith(color: s.inkSecondary)),
+        const SizedBox(height: AppSpacing.sm),
+        for (final out in i.outputs)
+          Padding(
+            padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+            child: DataWell(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      TagChip(
+                        label: out.kindLabel,
+                        color: out.isOwn
+                            ? s.liquid
+                            : out.isEscrow
+                                ? s.accent
+                                : out.isFee
+                                    ? s.inkFaint
+                                    : AppColors.warning,
+                      ),
+                      const Spacer(),
+                      Text(
+                        out.displayAmount ??
+                            (out.ticker != null ? 'blinded (${out.ticker})' : 'blinded'),
+                        style: AppTypography.numericSmall.copyWith(
+                          fontWeight: FontWeight.w700,
+                          color: s.ink,
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (out.address != null) ...[
+                    const SizedBox(height: AppSpacing.xs),
+                    KvRow(label: 'Address', value: out.address!),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        const SizedBox(height: AppSpacing.md),
+        KvRow(label: 'Fee', value: i.feeDisplay),
+        KvRow(label: 'Network', value: protocolNetworkLabel(i.network)),
+        KvRow(
+          label: 'Signatures',
+          value: '${i.sigsHave} of ${i.sigsNeeded} on the least-signed input',
+        ),
+      ],
+    );
+  }
+}
 
 /// The proof of key as the user must see it (§9.5): the statement, the
 /// site, the expiry, the wallet and its key, and the challenge line itself,
@@ -1206,224 +1886,203 @@ class _ErrorCard extends StatelessWidget {
   }
 }
 
+/// Which wallet answers. Always shown, never skipped: the one this site
+/// already knows leads (a signing request from a site is almost always for
+/// the wallet that site connected), then the preferred one, then the open
+/// one; the rest follow. Wallets that cannot take part are listed dimmed
+/// with the reason, so nothing seems to have vanished.
 class _WalletChoice extends StatelessWidget {
   const _WalletChoice({
     required this.wallets,
     required this.eligible,
     required this.connect,
+    required this.siteName,
     required this.onPick,
+    required this.connectedWalletIds,
     this.preferredWalletId,
+    this.activeWalletId,
   });
   final List<WalletSummary> wallets;
   final bool Function(WalletSummary) eligible;
   final bool connect;
+  final String siteName;
   final void Function(WalletSummary) onPick;
+
+  /// Wallets this device connected to the requesting site before.
+  final Set<String> connectedWalletIds;
 
   /// Settings › Templar Protocol's choice, when it can answer this request.
   final String? preferredWalletId;
+  final String? activeWalletId;
+
+  int _rank(WalletSummary w) {
+    if (connectedWalletIds.contains(w.id)) return 0;
+    if (w.id == preferredWalletId) return 1;
+    if (w.id == activeWalletId) return 2;
+    return 3;
+  }
+
+  static String _whyNot(WalletSummary w) {
+    if (!w.liquidEnabled) return 'no Liquid side';
+    if (w.isViewOnlyWallet) return 'watch-only, cannot sign';
+    if (w.isAirgapWallet) return 'air-gapped signer';
+    if (w.type != WalletType.singlesig) return 'multisig or policy wallet';
+    if (w.isHardwareWallet) return 'device is not a Jade';
+    return 'not usable here';
+  }
 
   @override
   Widget build(BuildContext context) {
     final s = AppScheme.of(context);
-    // The preferred wallet leads the list; the others keep their order.
     final usable = wallets.where(eligible).toList()
       ..sort((a, b) {
-        if (a.id == preferredWalletId) return -1;
-        if (b.id == preferredWalletId) return 1;
-        return 0;
+        final r = _rank(a).compareTo(_rank(b));
+        return r != 0 ? r : a.name.toLowerCase().compareTo(b.name.toLowerCase());
       });
     final others = wallets.where((w) => !eligible(w)).toList();
-    return FormCard(
-      title: connect ? 'Which wallet should the site know?' : 'Which wallet signs?',
-      subtitle: connect
-          ? 'A Liquid wallet: a software seed (its escrow key is derived from the seed) or a Jade (its BIP87 key, read from the device).'
-          : 'A Liquid wallet whose key took part in this loan.',
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (usable.isEmpty)
-            const WarningBanner(
-              message: 'No wallet qualifies. Create or restore a software wallet with '
-                  'Liquid enabled, then open the link again.',
-            ),
-          for (final w in usable)
-            HoverRow(
-              onTap: () => onPick(w),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
-                child: Row(
-                  children: [
-                    Icon(Icons.account_balance_wallet_outlined, size: 18, color: s.liquid),
-                    const SizedBox(width: AppSpacing.md),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(w.name, style: AppTypography.body),
-                          Text('${w.displayType} · ${w.networksLabel}'
-                              '${w.masterFingerprint != null ? ' · ${w.masterFingerprint}' : ''}',
-                              style: AppTypography.caption.copyWith(color: s.inkSecondary)),
-                        ],
-                      ),
-                    ),
-                    if (w.id == preferredWalletId) ...[
-                      TagChip(label: 'Preferred', color: s.liquid),
-                      const SizedBox(width: AppSpacing.sm),
-                    ],
-                    const Icon(Icons.chevron_right, size: 18),
-                  ],
-                ),
-              ),
-            ),
-          if (others.isNotEmpty) ...[
-            const SizedBox(height: AppSpacing.md),
-            Text(
-              'Not usable here: ${others.map((w) => w.name).join(', ')} '
-              '(no Liquid side, view-only, multisig or non-Jade device wallets).',
-              style: AppTypography.caption.copyWith(color: s.inkFaint),
+    final hasConnected = usable.any((w) => connectedWalletIds.contains(w.id));
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _ActionHeader(
+          icon: connect ? Icons.link_rounded : Icons.draw_outlined,
+          tint: s.liquid,
+          title: connect
+              ? 'Which wallet should $siteName know?'
+              : 'Which wallet signs for $siteName?',
+          subtitle: connect
+              ? 'The site will watch this wallet and use its loan key in your loans. '
+                  'A software seed or a Jade, with Liquid enabled.'
+              : hasConnected
+                  ? 'The wallet this site connected is first — a signing request from '
+                      'a site is for the wallet that site knows. Pick another only if '
+                      'you connected this site elsewhere.'
+                  : 'Pick the wallet whose key took part in this loan. This device has '
+                      'not connected $siteName yet, so none is marked.',
+          chips: [
+            TagChip(
+              label: '${usable.length} usable',
+              color: usable.isEmpty ? s.danger : s.liquid,
             ),
           ],
-        ],
-      ),
-    );
-  }
-}
-
-class _SiteSummaryPanel extends StatelessWidget {
-  const _SiteSummaryPanel({required this.request});
-  final ProtocolRequest request;
-
-  @override
-  Widget build(BuildContext context) {
-    final s = AppScheme.of(context);
-    final summary = request.summary;
-    return RailPanel(
-      title: 'What ${request.site} says',
-      rail: s.accent,
-      child: summary == null || summary.lines.isEmpty
-          ? Text('The site sent no summary.',
-              style: AppTypography.caption.copyWith(color: s.inkSecondary))
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+        ),
+        const SizedBox(height: AppSpacing.lg),
+        if (usable.isEmpty)
+          const WarningBanner(
+            message: 'No wallet qualifies. Create or restore a software wallet with '
+                'Liquid enabled (or import a Jade), then open the link again.',
+          )
+        else
+          ListCard(
+            children: [
+              for (final w in usable)
+                _WalletRow(
+                  wallet: w,
+                  connected: connectedWalletIds.contains(w.id),
+                  preferred: w.id == preferredWalletId,
+                  open: w.id == activeWalletId,
+                  onTap: () => onPick(w),
+                ),
+            ],
+          ),
+        if (others.isNotEmpty) ...[
+          const SizedBox(height: AppSpacing.lg),
+          Text('NOT USABLE HERE',
+              style: AppTypography.navSection.copyWith(color: s.inkFaint, letterSpacing: 1.2)),
+          const SizedBox(height: AppSpacing.sm),
+          Opacity(
+            opacity: 0.7,
+            child: ListCard(
               children: [
-                if (summary.role.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: AppSpacing.sm),
-                    child: TagChip(label: 'Your role: ${summary.role}', color: s.accent),
-                  ),
-                for (final line in summary.lines)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 3),
-                    child: KvRow(label: line.label, value: line.amount, labelWidth: 140),
+                for (final w in others)
+                  ListRow(
+                    icon: w.isHardwareWallet ? Icons.usb_rounded : Icons.account_balance_wallet_outlined,
+                    tint: s.inkFaint,
+                    title: w.name,
+                    subtitle: '${w.displayType} · ${_whyNot(w)}',
                   ),
               ],
             ),
+          ),
+        ],
+      ],
     );
   }
 }
 
-class _WalletViewPanel extends StatelessWidget {
-  const _WalletViewPanel({required this.inspection, required this.walletName});
-  final PsetInspection inspection;
-  final String walletName;
+class _WalletRow extends StatelessWidget {
+  const _WalletRow({
+    required this.wallet,
+    required this.connected,
+    required this.preferred,
+    required this.open,
+    required this.onTap,
+  });
+  final WalletSummary wallet;
+  final bool connected;
+  final bool preferred;
+  final bool open;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final s = AppScheme.of(context);
-    final i = inspection;
-    return RailPanel(
-      title: 'What "$walletName" reads',
-      rail: s.liquid,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Inputs (${i.inputs.length})', style: AppTypography.sectionTitle),
-          const SizedBox(height: AppSpacing.sm),
-          for (final inp in i.inputs)
-            Padding(
-              padding: const EdgeInsets.only(bottom: AppSpacing.sm),
-              child: DataWell(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        TagChip(
-                          label: inp.isOurs
-                              ? (inp.isScriptHash ? 'escrow · your key' : 'your coin')
-                              : (inp.isScriptHash ? 'contract · not yours' : 'not yours'),
-                          color: inp.isOurs ? s.liquid : s.inkFaint,
-                        ),
-                        const Spacer(),
-                        Text(
-                          inp.displayAmount ??
-                              (inp.ticker != null ? 'blinded (${inp.ticker})' : 'blinded'),
-                          style: AppTypography.numericSmall.copyWith(
-                            fontWeight: FontWeight.w700,
-                            color: s.ink,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: AppSpacing.xs),
-                    KvRow(label: 'Outpoint', value: inp.outpoint),
-                    if (inp.keyFingerprints.isNotEmpty)
-                      KvRow(label: 'Keys', value: inp.keyFingerprints.join(', ')),
-                    if (inp.signedBy.isNotEmpty)
-                      KvRow(label: 'Signed by', value: inp.signedBy.join(', ')),
-                  ],
+    final w = wallet;
+    final badges = <Widget>[
+      if (connected)
+        const StatusBadge(label: 'Connected to this site', variant: BadgeVariant.accent, dot: true),
+      if (preferred)
+        const StatusBadge(label: 'Preferred', variant: BadgeVariant.success),
+      if (open)
+        const StatusBadge(label: 'Open now', variant: BadgeVariant.neutral),
+    ];
+    return Semantics(
+      button: true,
+      child: Material(
+        type: MaterialType.transparency,
+        child: InkWell(
+          key: Key('protocol-wallet-${w.id}'),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(
+                horizontal: kListPad, vertical: AppSpacing.md),
+            child: Row(
+              children: [
+                ListIconTile(
+                  icon: w.isHardwareWallet ? Icons.usb_rounded : Icons.key_rounded,
+                  tint: connected ? s.accent : s.liquid,
                 ),
-              ),
-            ),
-          const SizedBox(height: AppSpacing.md),
-          Text('Outputs (${i.outputs.length})', style: AppTypography.sectionTitle),
-          const SizedBox(height: AppSpacing.sm),
-          for (final out in i.outputs)
-            Padding(
-              padding: const EdgeInsets.only(bottom: AppSpacing.sm),
-              child: DataWell(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        TagChip(
-                          label: out.kindLabel,
-                          color: out.isOwn
-                              ? s.liquid
-                              : out.isEscrow
-                                  ? s.accent
-                                  : out.isFee
-                                      ? s.inkFaint
-                                      : AppColors.warning,
-                        ),
-                        const Spacer(),
-                        Text(
-                          out.displayAmount ??
-                              (out.ticker != null ? 'blinded (${out.ticker})' : 'blinded'),
-                          style: AppTypography.numericSmall.copyWith(
-                            fontWeight: FontWeight.w700,
+                const SizedBox(width: kListGap),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(w.name,
+                          style: AppTypography.body.copyWith(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
                             color: s.ink,
-                          ),
-                        ),
+                          )),
+                      const SizedBox(height: 2),
+                      Text(
+                        '${w.displayType} · ${w.networksLabel}'
+                        '${w.masterFingerprint != null ? ' · ${w.masterFingerprint}' : ''}',
+                        style: AppTypography.caption.copyWith(color: s.inkSecondary),
+                      ),
+                      if (badges.isNotEmpty) ...[
+                        const SizedBox(height: AppSpacing.xs),
+                        Wrap(spacing: AppSpacing.xs, runSpacing: AppSpacing.xs, children: badges),
                       ],
-                    ),
-                    if (out.address != null) ...[
-                      const SizedBox(height: AppSpacing.xs),
-                      KvRow(label: 'Address', value: out.address!),
                     ],
-                  ],
+                  ),
                 ),
-              ),
+                const SizedBox(width: AppSpacing.sm),
+                Icon(Icons.chevron_right_rounded, size: 22, color: s.inkFaint),
+              ],
             ),
-          const SizedBox(height: AppSpacing.md),
-          KvRow(label: 'Fee', value: i.feeDisplay),
-          KvRow(label: 'Network', value: protocolNetworkLabel(i.network)),
-          KvRow(
-            label: 'Signatures',
-            value: '${i.sigsHave} of ${i.sigsNeeded} on the least-signed input',
           ),
-        ],
+        ),
       ),
     );
   }
@@ -1436,6 +2095,7 @@ class _DoneCard extends StatelessWidget {
     required this.next,
     required this.onOpen,
     required this.onClose,
+    this.onOpenLoans,
   });
   final String site;
   final bool connect;
@@ -1443,9 +2103,21 @@ class _DoneCard extends StatelessWidget {
   final VoidCallback onOpen;
   final VoidCallback onClose;
 
+  /// Set when the Loans page is in the menu: the natural next place after a
+  /// connect, where the site's loans show up.
+  final VoidCallback? onOpenLoans;
+
   @override
   Widget build(BuildContext context) {
     final s = AppScheme.of(context);
+    final phone = AppLayout.isPhone(context);
+    final buttons = <Widget>[
+      if (next != null)
+        PrimaryButton(label: 'Open in browser', icon: Icons.open_in_new, onPressed: onOpen),
+      if (onOpenLoans != null)
+        SecondaryButton(label: 'Open Loans', icon: Icons.handshake_outlined, onPressed: onOpenLoans),
+      SecondaryButton(label: 'Back to wallet', onPressed: onClose),
+    ];
     return FormCard(
       title: connect ? 'Wallet connected' : 'Signature sent',
       subtitle: connect
@@ -1462,15 +2134,18 @@ class _DoneCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: AppSpacing.lg),
-          Row(
-            children: [
-              if (next != null) ...[
-                PrimaryButton(label: 'Open in browser', icon: Icons.open_in_new, onPressed: onOpen),
-                const SizedBox(width: AppSpacing.md),
+          if (phone)
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (var i = 0; i < buttons.length; i++) ...[
+                  if (i > 0) const SizedBox(height: AppSpacing.sm),
+                  buttons[i],
+                ],
               ],
-              SecondaryButton(label: 'Back to wallet', onPressed: onClose),
-            ],
-          ),
+            )
+          else
+            Wrap(spacing: AppSpacing.md, runSpacing: AppSpacing.sm, children: buttons),
         ],
       ),
     );

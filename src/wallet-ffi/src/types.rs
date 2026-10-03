@@ -658,6 +658,21 @@ pub struct PsetInspectionDto {
     /// What this wallet gains (positive) or pays (negative) per asset id,
     /// from LWK's own unblinding — the one figure a PSET cannot misstate.
     pub net_change: std::collections::BTreeMap<String, i64>,
+    /// [`Self::net_change`] with the ticker and the formatted amount, one
+    /// line per asset, zeros left out — what the review screen leads with.
+    #[serde(default)]
+    pub net_change_lines: Vec<NetChangeDto>,
+}
+
+/// One asset's net effect on this wallet, ready to display.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct NetChangeDto {
+    pub asset_id: String,
+    pub ticker: String,
+    /// Signed base units: positive comes in, negative goes out.
+    pub amount_sats: i64,
+    /// `+9,950 tUSDt` / `-0.01000000 L-BTC`: signed, with the asset's precision.
+    pub display_amount: String,
 }
 
 #[derive(Deserialize, Debug)]
