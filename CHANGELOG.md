@@ -19,6 +19,12 @@ any release may change anything.
   token (`401`) is dropped and the page says «Reconnect to see your loans»;
   rate limits and a site that is offline keep the last answer on screen with
   the reason.
+- **Open on Templar Protocol**, from a loan card or the Loans header: the
+  wallet asks the site for a one-time link (`POST /connector/open`) and
+  opens it in the browser, which lands on the loan already signed in as
+  this wallet. The token stays in the request header; the link is single
+  use and expires in two minutes; an expired token or an offline site is
+  explained in words.
 - The connect answer's `portfolio` object (URL + bearer token) is kept with
   the connected site; sites connected by 0.1.0 have none and say so.
   «Forget» on a site with a token also revokes it on the site

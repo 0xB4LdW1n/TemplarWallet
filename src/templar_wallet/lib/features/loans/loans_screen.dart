@@ -57,6 +57,13 @@ class _LoansScreenState extends State<LoansScreen> {
   bool _sitesLoaded = false;
   String? _walletId;
 
+  /// The loan whose one-time link is being fetched (`0` for the site root),
+  /// so that card's button waits; null when nothing is in flight.
+  int? _opening;
+
+  /// Why the last «Open on Templar Protocol» did not open, in words.
+  String? _openError;
+
   @override
   void initState() {
     super.initState();
@@ -130,15 +137,44 @@ class _LoansScreenState extends State<LoansScreen> {
     ProtocolLinkService.instance.inject(request.link);
   }
 
-  /// Opens the loan (or the site) in the browser. The one-time session link
-  /// of §8 arrives with the next deliverable; until then this is the plain
-  /// page, where the site asks the browser to sign in on its own.
+  /// «Open on Templar Protocol» (§8): asks the site for a one-time link that
+  /// lands the browser on the loan — or on the site's front page — already
+  /// inside this wallet's session, and hands that link to the system
+  /// browser. The bearer token never leaves the request header; the link
+  /// itself is single use and dies in two minutes.
   Future<void> _open(ProtocolLoan? loan) async {
     final site = _site;
-    if (site == null) return;
-    final target = loan?.nextAction?.url ?? Uri.tryParse(site.origin);
-    if (target == null) return;
-    await launchUrl(target, mode: LaunchMode.externalApplication);
+    if (site == null || _opening != null) return;
+    if (!site.hasPortfolio) {
+      await _openSite();
+      return;
+    }
+    final id = loan?.id ?? 0;
+    setState(() {
+      _opening = id;
+      _openError = null;
+    });
+    try {
+      final link = await _service.openLink(site, to: loan == null ? '/' : '/loans/${loan.id}');
+      if (!mounted) return;
+      final launched = await launchUrl(link, mode: LaunchMode.externalApplication);
+      if (!launched && mounted) {
+        setState(() => _openError =
+            'The browser did not open. The link is single use and expires in '
+            'two minutes — press the button again for a fresh one.');
+      }
+    } on ProtocolPortfolioError catch (e) {
+      if (!mounted) return;
+      setState(() => _openError = e.message);
+      if (e.kind == ProtocolPortfolioErrorKind.needsReconnect) {
+        // The token died on the site's side; the record has dropped it too.
+        await _loadSites();
+      }
+    } catch (e) {
+      if (mounted) setState(() => _openError = 'Could not open the site: $e');
+    } finally {
+      if (mounted) setState(() => _opening = null);
+    }
   }
 
   Future<void> _openSite() async {
@@ -185,7 +221,7 @@ class _LoansScreenState extends State<LoansScreen> {
                 icon: Icons.tune_rounded,
                 onPressed: () => context.go(AppRoutes.settingsProtocol),
               ),
-              if (site != null && site.hasPortfolio)
+              if (site != null && site.hasPortfolio) ...[
                 SecondaryButton(
                   key: const Key('loans-refresh'),
                   label: 'Refresh',
@@ -194,16 +230,38 @@ class _LoansScreenState extends State<LoansScreen> {
                   isLoading: loading,
                   onPressed: loading ? null : _refresh,
                 ),
+                SecondaryButton(
+                  key: const Key('loans-open-root'),
+                  label: 'Open on Templar Protocol',
+                  icon: Icons.open_in_new,
+                  dense: true,
+                  isLoading: _opening == 0,
+                  onPressed: _opening != null ? null : () => _open(null),
+                ),
+              ],
             ],
           )
         else
           _PhoneHeader(
             subtitle: subtitle,
             loading: loading,
+            opening: _opening == 0,
             canRefresh: site != null && site.hasPortfolio,
             onRefresh: _refresh,
+            onOpen: _opening != null ? null : () => _open(null),
             onSettings: () => context.go(AppRoutes.settingsProtocol),
           ),
+        if (_openError != null) ...[
+          DangerBanner(
+            title: 'Could not open the site',
+            message: _openError!,
+            action: GhostButton(
+              label: 'Dismiss',
+              onPressed: () => setState(() => _openError = null),
+            ),
+          ),
+          SizedBox(height: phone ? AppSpacing.md : AppSpacing.lg),
+        ],
         if (_sites.length > 1) ...[
           SegmentedSwitch<String>(
             selected: _siteKey ?? _sites.first.key,
@@ -369,6 +427,7 @@ class _LoansScreenState extends State<LoansScreen> {
           LoanCard(
             loan: open[i],
             tipHeight: portfolio.tipHeight,
+            busy: _opening == open[i].id,
             onSign: _sign,
             onOpen: () => _open(open[i]),
           ),
@@ -397,6 +456,7 @@ class _LoansScreenState extends State<LoansScreen> {
                 LoanCard(
                   loan: closed[i],
                   tipHeight: portfolio.tipHeight,
+                  busy: _opening == closed[i].id,
                   onOpen: () => _open(closed[i]),
                 ),
               ],
@@ -432,14 +492,18 @@ class _PhoneHeader extends StatelessWidget {
   const _PhoneHeader({
     required this.subtitle,
     required this.loading,
+    required this.opening,
     required this.canRefresh,
     required this.onRefresh,
+    required this.onOpen,
     required this.onSettings,
   });
   final String subtitle;
   final bool loading;
+  final bool opening;
   final bool canRefresh;
   final VoidCallback onRefresh;
+  final VoidCallback? onOpen;
   final VoidCallback onSettings;
 
   @override
@@ -470,7 +534,7 @@ class _PhoneHeader extends StatelessWidget {
             onPressed: onSettings,
             icon: Icon(Icons.tune_rounded, color: s.inkSecondary),
           ),
-          if (canRefresh)
+          if (canRefresh) ...[
             IconButton(
               key: const Key('loans-refresh'),
               tooltip: 'Refresh',
@@ -481,6 +545,17 @@ class _PhoneHeader extends StatelessWidget {
                       child: CircularProgressIndicator(strokeWidth: 2))
                   : Icon(Icons.refresh_rounded, color: s.inkSecondary),
             ),
+            IconButton(
+              key: const Key('loans-open-root'),
+              tooltip: 'Open on Templar Protocol',
+              onPressed: onOpen,
+              icon: opening
+                  ? const SizedBox(
+                      width: 18, height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : Icon(Icons.open_in_new, color: s.inkSecondary),
+            ),
+          ],
         ],
       ),
     );

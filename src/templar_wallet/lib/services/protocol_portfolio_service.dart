@@ -1,7 +1,7 @@
-// The wallet's side of `GET /connector/portfolio` and
-// `DELETE /connector/portfolio` (connector-protocol.md §7): one HTTP client,
-// one in-memory cache per connected site, and the hooks the rest of the app
-// pulls to keep the Loans screen current.
+// The wallet's side of `GET /connector/portfolio`, `POST /connector/open`
+// and `DELETE /connector/portfolio` (connector-protocol.md §7–§8): one HTTP
+// client, one in-memory cache per connected site, and the hooks the rest of
+// the app pulls to keep the Loans screen current.
 //
 // What it refuses to do: persist a portfolio (the site is the ledger; this
 // holds the last answer only while the app runs), put the bearer token
@@ -174,6 +174,71 @@ class ProtocolPortfolioService extends ChangeNotifier {
     } on FormatException catch (e) {
       throw ProtocolPortfolioError(ProtocolPortfolioErrorKind.malformed, e.message);
     }
+  }
+
+  // ── Open on the site (§8) ───────────────────────────────────────────────────
+
+  /// `POST /connector/open`: asks the site for a one-time browser link that
+  /// lands on [to] (a same-site path, `/` by default) already inside this
+  /// wallet's session. The bearer token travels in the header only; the link
+  /// that comes back is a two-minute secret of its own, meant for the system
+  /// browser and nothing else. A link to another host is refused.
+  Future<Uri> openLink(ProtocolConnectedSite site, {String to = '/'}) async {
+    final url = site.portfolioUrl;
+    final token = site.portfolioToken;
+    if (!site.hasPortfolio || url == null || token == null) {
+      throw ProtocolPortfolioError(
+        ProtocolPortfolioErrorKind.needsReconnect,
+        '${site.site} has no access token for this wallet yet. Connect it '
+        'again from the site, then open it from here.',
+      );
+    }
+    final uri = openEndpoint(Uri.parse(url));
+    final resp = await _send(
+      () => _client.post(
+        uri,
+        headers: {..._headers(token), 'Content-Type': 'application/json'},
+        body: jsonEncode({'to': to}),
+      ),
+      uri,
+    );
+    _checkStatus(resp, site, uri);
+    Object? decoded;
+    try {
+      decoded = jsonDecode(utf8.decode(resp.bodyBytes));
+    } catch (_) {}
+    final link = decoded is Map ? decoded['url'] : null;
+    final parsed = link is String ? Uri.tryParse(link.trim()) : null;
+    if (parsed == null || !parsed.hasScheme || parsed.host.isEmpty) {
+      throw ProtocolPortfolioError(ProtocolPortfolioErrorKind.malformed,
+          '${site.site} did not answer with a link.');
+    }
+    if (parsed.host.toLowerCase() != uri.host.toLowerCase() ||
+        parsed.scheme != uri.scheme) {
+      throw ProtocolPortfolioError(
+        ProtocolPortfolioErrorKind.malformed,
+        '${site.site} answered with a link to another host (${parsed.host}). '
+        'Refusing to open it.',
+      );
+    }
+    return parsed;
+  }
+
+  /// `…/connector/portfolio` → `…/connector/open`, keeping whatever prefix
+  /// the site is mounted under.
+  @visibleForTesting
+  static Uri openEndpoint(Uri portfolio) {
+    const tail = '/connector/portfolio';
+    final path = portfolio.path;
+    final base = path.endsWith(tail)
+        ? path.substring(0, path.length - tail.length)
+        : '';
+    return Uri(
+      scheme: portfolio.scheme,
+      host: portfolio.host,
+      port: portfolio.hasPort ? portfolio.port : null,
+      path: '$base/connector/open',
+    );
   }
 
   // ── Revoke (§7, «Forget site») ─────────────────────────────────────────────
