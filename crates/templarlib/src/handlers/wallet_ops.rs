@@ -2,11 +2,11 @@
 
 use templar_core::{LiquidWalletManager, WalletManager, WalletProfile};
 
-use crate::state::{AppFfiState, ChainSyncOutcome};
+use crate::state::{AppState, ChainSyncOutcome};
 
 /// Open a wallet by ID — initializes WalletManager and optionally LiquidWalletManager.
 /// Stores them in `state.bitcoin` and `state.liquid`.
-pub fn open_wallet(state: &mut AppFfiState, wallet_id: &str) -> Result<(), String> {
+pub fn open_wallet(state: &mut AppState, wallet_id: &str) -> Result<(), String> {
     let entry = state
         .registry
         .find(wallet_id)
@@ -87,7 +87,7 @@ pub fn open_wallet(state: &mut AppFfiState, wallet_id: &str) -> Result<(), Strin
             None
         }
         Some(Err(e)) => {
-            eprintln!("[wallet-ffi] BTC wallet init error: {}", e);
+            eprintln!("[templarlib] BTC wallet init error: {}", e);
             Some(e)
         }
         None => None,
@@ -137,7 +137,7 @@ pub fn open_wallet(state: &mut AppFfiState, wallet_id: &str) -> Result<(), Strin
         }
     } else if let WalletProfile::Software { mnemonic } = &entry.profile {
         // No saved liquid descriptor — derive default WPKH SLIP77 wallet automatically
-        eprintln!("[wallet-ffi] No liquid config found, auto-deriving from mnemonic...");
+        eprintln!("[templarlib] No liquid config found, auto-deriving from mnemonic...");
         match LiquidWalletManager::from_mnemonic_with_persist_on(
             &liq_network,
             mnemonic,
@@ -145,16 +145,16 @@ pub fn open_wallet(state: &mut AppFfiState, wallet_id: &str) -> Result<(), Strin
         ) {
             Ok(mgr) => {
                 eprintln!(
-                    "[wallet-ffi] Liquid auto-init OK on {liq_network}, descriptor={}",
+                    "[templarlib] Liquid auto-init OK on {liq_network}, descriptor={}",
                     mgr.descriptor
                 );
                 state.liquid = Some(mgr);
             }
-            Err(e) => eprintln!("[wallet-ffi] Liquid auto-init ERROR: {}", e),
+            Err(e) => eprintln!("[templarlib] Liquid auto-init ERROR: {}", e),
         }
     } else {
         eprintln!(
-            "[wallet-ffi] No liquid config and non-Software profile — liquid wallet not opened"
+            "[templarlib] No liquid config and non-Software profile — liquid wallet not opened"
         );
     }
 
@@ -164,7 +164,7 @@ pub fn open_wallet(state: &mut AppFfiState, wallet_id: &str) -> Result<(), Strin
             state.asset_registry.add_local_metadata(meta.clone());
         }
         eprintln!(
-            "[wallet-ffi] Loaded {} asset metadata entries from wallet config",
+            "[templarlib] Loaded {} asset metadata entries from wallet config",
             liq_cfg.asset_metadata.len()
         );
     }
@@ -189,7 +189,7 @@ pub fn open_wallet(state: &mut AppFfiState, wallet_id: &str) -> Result<(), Strin
 /// no Bitcoin side (a Liquid-only ct() entry). For every other profile it is
 /// an `Error` — silently returning Ok here let the footer go green without a
 /// Bitcoin wallet ever opening (e.g. sled lock held by another process).
-pub fn sync_bitcoin(state: &mut AppFfiState) -> ChainSyncOutcome {
+pub fn sync_bitcoin(state: &mut AppState) -> ChainSyncOutcome {
     match &state.bitcoin {
         Some(mgr) => match mgr.sync() {
             Ok(()) => ChainSyncOutcome::Ok,
@@ -197,7 +197,7 @@ pub fn sync_bitcoin(state: &mut AppFfiState) -> ChainSyncOutcome {
         },
         None if active_wallet_is_liquid_only(state) => ChainSyncOutcome::Skipped,
         None => {
-            eprintln!("[wallet-ffi] BTC sync failed — no Bitcoin wallet loaded (Sled lock held by another process?)");
+            eprintln!("[templarlib] BTC sync failed — no Bitcoin wallet loaded (Sled lock held by another process?)");
             ChainSyncOutcome::Error(
                 "Bitcoin wallet is not open — reopen the wallet (its database may be \
                  locked by another instance)"
@@ -208,7 +208,7 @@ pub fn sync_bitcoin(state: &mut AppFfiState) -> ChainSyncOutcome {
 }
 
 /// Sync Liquid wallet.
-pub fn sync_liquid(state: &mut AppFfiState) -> ChainSyncOutcome {
+pub fn sync_liquid(state: &mut AppState) -> ChainSyncOutcome {
     match &mut state.liquid {
         Some(mgr) => match mgr.sync() {
             Ok(()) => ChainSyncOutcome::Ok,
@@ -221,7 +221,7 @@ pub fn sync_liquid(state: &mut AppFfiState) -> ChainSyncOutcome {
 /// True when the active wallet is a Liquid-only entry (a hardware/watch-only
 /// profile whose descriptor is a CT descriptor) — such wallets have no Bitcoin
 /// side by design, so skipping the BTC sync is legitimate.
-fn active_wallet_is_liquid_only(state: &AppFfiState) -> bool {
+fn active_wallet_is_liquid_only(state: &AppState) -> bool {
     let Some(id) = state.active_wallet_id.as_deref() else {
         return false;
     };

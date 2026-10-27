@@ -1,5 +1,5 @@
 // Decode contract for WalletSummary.fromJson — the exact shape wallet-ffi's
-// WalletSummaryDto serializes (see src/wallet-ffi/src/types.rs). A duplicate
+// WalletSummaryDto serializes (see crates/templarlib/src/types.rs). A duplicate
 // parser drifting from this model already shipped one bug (commit 0b75bd9),
 // so the fixtures below mirror real wire payloads, not hand-picked subsets.
 

@@ -1,4 +1,4 @@
-//! Hermetic contract tests for the JSON FFI surface.
+//! Hermetic contract tests for the shared JSON application surface.
 //!
 //! These drive `dispatch::dispatch()` — the same router the C `wallet_call`
 //! entry point uses — against a throwaway data directory per test, fully
@@ -17,7 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 
 use crate::dispatch::dispatch;
-use crate::state::AppFfiState;
+use crate::state::AppState;
 
 /// Standard BIP39 test vector. Master fingerprint: 73c5da0a.
 const MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon \
@@ -25,11 +25,11 @@ const MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon 
 
 static DIR_SEQ: AtomicU32 = AtomicU32::new(0);
 
-/// Per-test state bound to a unique temp data dir. `AppFfiState` takes an
+/// Per-test state bound to a unique temp data dir. `AppState` takes an
 /// exclusive per-data-dir file lock, so unique dirs keep the parallel test
 /// runner from colliding; the dir is removed (best-effort) on drop.
 struct TestEnv {
-    state: AppFfiState,
+    state: AppState,
     dir: PathBuf,
 }
 
@@ -72,7 +72,7 @@ impl TestEnv {
             nanos,
         ));
         std::fs::create_dir_all(&dir).expect("create test data dir");
-        let state = AppFfiState::new_for_test(dir.clone());
+        let state = AppState::new_for_test(dir.clone());
         Self { state, dir }
     }
 
@@ -315,7 +315,7 @@ fn get_wallet_info_exposes_public_identity_for_software_wallet() {
 
     let recv = info["receive_descriptor"].as_str().unwrap_or("");
     assert!(recv.contains("wpkh("), "descriptor expected: {recv:?}");
-    // N1 guarantee: never expose a signing descriptor across the FFI.
+    // N1 guarantee: never expose a signing descriptor across the API.
     for field in ["receive_descriptor", "change_descriptor"] {
         let desc = info[field].as_str().unwrap_or("");
         assert!(
@@ -727,7 +727,7 @@ fn creating_a_seed_wallet_without_a_vault_is_refused() {
         nanos,
     ));
     std::fs::create_dir_all(&dir).expect("create test data dir");
-    let mut state = AppFfiState::new_for_test(dir.clone());
+    let mut state = AppState::new_for_test(dir.clone());
 
     let resp = dispatch(
         &mut state,
@@ -769,7 +769,7 @@ fn second_instance_on_same_data_dir_gets_startup_error() {
     assert!(env.state.startup_error.is_none());
 
     // A second state on the same dir must fail to take the instance lock…
-    let mut second = AppFfiState::new_for_test(env.dir.clone());
+    let mut second = AppState::new_for_test(env.dir.clone());
     let msg = second
         .startup_error
         .clone()
@@ -1952,7 +1952,7 @@ fn regtest_refuses_the_public_services_with_a_clear_error() {
 /// through `elementsd` RPC, see the balance, send, see it move.
 ///
 /// Needs the protocol's regtest node running (see the Templar Protocol
-/// repository); run with `cargo test -p wallet-ffi -- --ignored regtest_node`.
+/// repository); run with `cargo test -p templarlib -- --ignored regtest_node`.
 #[test]
 #[ignore = "needs the Templar Protocol's regtest elementsd on 127.0.0.1:18884"]
 fn regtest_node_sync_and_send_end_to_end() {
@@ -2099,7 +2099,7 @@ const CHALLENGE: &str = "Templar Protocol · access · http://127.0.0.1:8087 · 
                          nonce=AAAAAAAAAAAAAAAAAAAAAA · expires=2026-10-03T10:15:00Z · \
                          this signature never moves funds";
 
-/// Proof of key, end to end through the FFI: the check is built for the
+/// Proof of key, end to end through the shared API: the check is built for the
 /// wallet's escrow key, reads as "not my coin, 0, OP_RETURN, fee 0", is
 /// recognised as the check of its own challenge, signs once through the
 /// ordinary `sign_pset` route and is still recognised afterwards; anything
@@ -2274,7 +2274,7 @@ fn protocol_check_pset_is_built_signed_and_judged() {
 //
 // Run one with
 //   TEMPLAR_LIVE_CONNECT_LINK='templar://connect?url=…&nonce=…' \
-//     cargo test -p wallet-ffi live_connect -- --ignored --nocapture
+//     cargo test -p templarlib live_connect -- --ignored --nocapture
 
 fn live_env(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("set {name} (see the comment above)"))

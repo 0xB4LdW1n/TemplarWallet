@@ -203,7 +203,7 @@ contract can be checked without the GUI:
 # 1. In a browser without a wallet (or with curl and a fresh cookie jar), press
 #    "Connect Templar Wallet" on /wallet and copy its templar://connect link.
 TEMPLAR_LIVE_CONNECT_LINK='templar://connect?url=…&nonce=…' \
-  cargo test -p wallet-ffi live_connect -- --ignored --nocapture
+  cargo test -p templarlib live_connect -- --ignored --nocapture
 #    → connects with the proof of key in the callback, reads GET /connector/portfolio
 #      with the token it got back (TEMPLAR_LIVE_OUT=file saves the JSON), mints a
 #      POST /connector/open link and prints it: open it in a browser to land signed in.
@@ -212,7 +212,7 @@ TEMPLAR_LIVE_CONNECT_LINK='templar://connect?url=…&nonce=…' \
 
 # 2. From that prove page (or «Find your loans»), copy the templar://sign link.
 TEMPLAR_LIVE_SIGN_LINK='templar://sign?url=…&nonce=…' \
-  cargo test -p wallet-ffi live_proof -- --ignored --nocapture
+  cargo test -p templarlib live_proof -- --ignored --nocapture
 #    → protocol_is_check_pset must say yes to the site-built check, sign_pset
 #      signs it, the callback is accepted and carries the portfolio token.
 ```

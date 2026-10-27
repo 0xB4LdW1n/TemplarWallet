@@ -10,10 +10,10 @@ use templar_core::{
 use std::path::Path;
 
 use crate::handlers::vault::{ensure_unlocked, require_encryption_for_seed};
-use crate::state::AppFfiState;
+use crate::state::AppState;
 use crate::types::WalletSummaryDto;
 
-pub fn list_wallets(state: &AppFfiState) -> Result<Vec<WalletSummaryDto>, String> {
+pub fn list_wallets(state: &AppState) -> Result<Vec<WalletSummaryDto>, String> {
     let registry = &state.registry;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -121,7 +121,7 @@ fn wallet_key_identity(profile: &WalletProfile) -> KeyIdentity {
     }
 }
 
-pub fn reload_registry(state: &mut AppFfiState) -> Result<(), String> {
+pub fn reload_registry(state: &mut AppState) -> Result<(), String> {
     state.registry = state.load_registry()?;
     Ok(())
 }
@@ -140,7 +140,7 @@ pub fn generate_mnemonic(word_count: usize) -> Result<Vec<String>, String> {
 ///
 /// Returns the new wallet's `WalletSummaryDto`.
 pub fn create_wallet(
-    state: &mut AppFfiState,
+    state: &mut AppState,
     name: &str,
     mnemonic: &str,
     liquid: bool,
@@ -222,7 +222,7 @@ pub fn create_wallet(
 /// Software profiles only. A hardware or multisig wallet's Liquid side needs
 /// keys this app does not hold (a Jade slip77 key, the cosigners' BIP87
 /// xpubs), so it must be set up when the wallet is created.
-pub fn enable_liquid(state: &mut AppFfiState, wallet_id: &str) -> Result<(), String> {
+pub fn enable_liquid(state: &mut AppState, wallet_id: &str) -> Result<(), String> {
     // Same guard as create_wallet: with the vault locked the in-memory registry
     // is empty, and saving it would write over the encrypted one.
     ensure_unlocked(state)?;
@@ -284,7 +284,7 @@ pub fn enable_liquid(state: &mut AppFfiState, wallet_id: &str) -> Result<(), Str
 /// check below).
 #[allow(clippy::too_many_arguments)]
 pub fn create_multisig_wallet(
-    state: &mut AppFfiState,
+    state: &mut AppState,
     name: &str,
     required_sigs: usize,
     total_signers: usize,
@@ -463,7 +463,7 @@ fn normalize_key_list(raw: &[String], role: CosignerRole) -> Result<Vec<String>,
 /// rebuild: the descriptor then carries an xprv that is not in the registry,
 /// and a rebuild would quietly turn a signing wallet into a watch-only one.
 pub fn repair_multisig_wallet(
-    state: &mut AppFfiState,
+    state: &mut AppState,
     wallet_id: &str,
 ) -> Result<WalletSummaryDto, String> {
     ensure_unlocked(state)?;
@@ -653,7 +653,7 @@ pub fn derive_liquid_cosigner_xpub(mnemonic: &str) -> Result<String, String> {
 }
 
 /// BIP87 Liquid cosigner xpub for an existing software wallet in the registry.
-pub fn get_liquid_cosigner_xpub(state: &AppFfiState, wallet_id: &str) -> Result<String, String> {
+pub fn get_liquid_cosigner_xpub(state: &AppState, wallet_id: &str) -> Result<String, String> {
     ensure_unlocked(state)?;
     let entry = state
         .registry
@@ -670,7 +670,7 @@ pub fn get_liquid_cosigner_xpub(state: &AppFfiState, wallet_id: &str) -> Result<
 }
 
 /// BIP48 cosigner xpub for an existing software wallet in the registry.
-pub fn get_cosigner_xpub(state: &AppFfiState, wallet_id: &str) -> Result<String, String> {
+pub fn get_cosigner_xpub(state: &AppState, wallet_id: &str) -> Result<String, String> {
     ensure_unlocked(state)?;
     let entry = state
         .registry
@@ -687,7 +687,7 @@ pub fn get_cosigner_xpub(state: &AppFfiState, wallet_id: &str) -> Result<String,
 }
 
 /// Return the BIP39 seed words of a software wallet.
-pub fn get_mnemonic(state: &AppFfiState, wallet_id: &str) -> Result<Vec<String>, String> {
+pub fn get_mnemonic(state: &AppState, wallet_id: &str) -> Result<Vec<String>, String> {
     ensure_unlocked(state)?;
     let entry = state
         .registry
@@ -704,7 +704,7 @@ pub fn get_mnemonic(state: &AppFfiState, wallet_id: &str) -> Result<Vec<String>,
 }
 
 /// Return the raw master extended private key (xprv/tprv) of a software wallet.
-pub fn get_private_key(state: &AppFfiState, wallet_id: &str) -> Result<String, String> {
+pub fn get_private_key(state: &AppState, wallet_id: &str) -> Result<String, String> {
     ensure_unlocked(state)?;
     let entry = state
         .registry
@@ -719,11 +719,7 @@ pub fn get_private_key(state: &AppFfiState, wallet_id: &str) -> Result<String, S
 }
 
 /// Rename a wallet in the registry and persist the change.
-pub fn rename_wallet(
-    state: &mut AppFfiState,
-    wallet_id: &str,
-    new_name: &str,
-) -> Result<(), String> {
+pub fn rename_wallet(state: &mut AppState, wallet_id: &str, new_name: &str) -> Result<(), String> {
     ensure_unlocked(state)?;
     let entry = state
         .registry
@@ -737,7 +733,7 @@ pub fn rename_wallet(
 /// registry entry — sealed with the vault, read back by every builder and
 /// signer. A save that fails leaves the list as it was.
 pub fn set_utxos_frozen(
-    state: &mut AppFfiState,
+    state: &mut AppState,
     wallet_id: &str,
     chain: &str,
     outpoints: &[String],
@@ -763,7 +759,7 @@ pub fn set_utxos_frozen(
 /// Delete a wallet from the registry, persist, and remove its on-disk BDK
 /// database. The LWK `enc_cache` subdirs are left behind: they are keyed by a
 /// descriptor hash we cannot recompute here, and are harmless cache data.
-pub fn delete_wallet(state: &mut AppFfiState, wallet_id: &str) -> Result<(), String> {
+pub fn delete_wallet(state: &mut AppState, wallet_id: &str) -> Result<(), String> {
     ensure_unlocked(state)?;
     let removed = state.registry.find(wallet_id).cloned();
 

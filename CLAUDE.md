@@ -15,12 +15,13 @@ protocol on Liquid (`templar://` links, `docs/guides/PROTOCOL_CONNECTOR.md`).
 
 ## Architecture
 
-Three layers. The Flutter app is the product.
+Shared Rust engine with two host adapters. Flutter remains the main product;
+the terminal client is a second first-party host.
 
 ```
 TemplarWallet/
-├── Cargo.toml                  # workspace: crates/templar-core, src/wallet-ffi
-├── crates/templar-core/        # Backend. ZERO GUI deps.
+├── Cargo.toml                  # Rust workspace
+├── crates/templar-core/        # Chain and wallet primitives. ZERO GUI deps.
 │   └── src/
 │       ├── lib.rs  error.rs (TemplarError)  config.rs  registry.rs
 │       ├── types.rs  derivation.rs (SLIP-77)  qr.rs (UR2/SeedQR)
@@ -36,13 +37,18 @@ TemplarWallet/
 │                               #   liquidex.rs + book.rs (v0 swaps),
 │                               #   protocol.rs (Templar Protocol escrow key,
 │                               #   proof-of-key check PSET)
+├── crates/templarlib/          # Reusable application engine. ZERO UI deps.
+│   └── src/
+│       ├── lib.rs              # TemplarLib public facade + method catalog
+│       ├── dispatch.rs         # stable JSON method router
+│       ├── state.rs            # data dir, vault, wallet state, instance lock
+│       ├── types.rs            # shared request/response DTOs
+│       └── handlers/           # application workflows over templar-core
 │
-├── src/wallet-ffi/             # C ABI bridge -> libwallet_ffi.{dylib,so,dll}
-│   └── src/                    # lib.rs exports wallet_call + wallet_free_string
-│       ├── dispatch.rs         # JSON method router
-│       ├── state.rs            # AppFfiState: data dir, vault, instance lock
-│       └── handlers/           # bitcoin, liquid, registry, wallet_ops, hw,
-│                               #   history, psbt/vault, peg, swaps
+├── crates/templar-tui/         # `templar` CLI and interactive terminal UI
+│
+├── src/wallet-ffi/             # thin C ABI adapter for Flutter
+│   └── src/lib.rs              # wallet_call, wallet_free_string, data-dir setup
 │
 └── src/templar_wallet/         # Flutter app (macOS / Linux / Windows / Android)
     ├── lib/
@@ -64,7 +70,8 @@ TemplarWallet/
 
 ### Data flow
 
-Flutter → `wallet_call(json)` → `dispatch.rs` → handler → `templar-core` → BDK/LWK.
+Flutter → `wallet_call(json)` → `templarlib` → `templar-core` → BDK/LWK.
+Terminal → `TemplarLib::call` → `templarlib` → `templar-core` → BDK/LWK.
 `bridge_provider.dart` falls back to `MockWalletBridge` when the dylib fails to
 load — **a mock fallback can look like a working wallet**; check which bridge is
 live before trusting any on-screen balance.
@@ -88,7 +95,7 @@ live before trusting any on-screen balance.
    testnet assets; the registry submission is refused on regtest.
 8. **Frozen coins are never spent** — the set lives on the registry entry
    (`WalletEntry.frozen`, `frozen.rs`). Every builder takes it
-   (`AppFfiState::frozen_on`): BDK leaves it out with `unspendable`, LWK with
+   (`AppState::frozen_on`): BDK leaves it out with `unspendable`, LWK with
    `set_wallet_utxos` where LWK allows it (L-BTC-only payments) and refuses
    otherwise; every signer runs `refuse_frozen_inputs` first. A new spend or
    sign path must do both.
@@ -178,17 +185,22 @@ the value saved in `AppConfig`, else testnet), `TEMPLAR_LIQUID_REGTEST_POLICY_AS
 `TEMPLAR_ELEMENTS_RPC_URL/USER/PASS` (default `http://127.0.0.1:18884`,
 `templar`/`templar` — the Templar Protocol's local regtest node). Core keeps no
 global network:
-the FFI state passes it to the `*_on` constructors; the no-suffix constructors
+the templarlib state passes it to the `*_on` constructors; the no-suffix constructors
 read the env and default to testnet (what the Templar Protocol relies on). Peg,
 public order book and asset-registry submission are refused on regtest.
 
 ## Build & Run
 
 ```bash
-# Rust (the workspace is templar-core + wallet-ffi only)
-cargo test -p templar-core -p wallet-ffi
-cargo clippy -p templar-core -p wallet-ffi --all-targets -- -D warnings
+# Rust
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
+
+# Terminal
+cargo run -p templar-tui -- --help
+cargo run -p templar-tui -- methods
+cargo run -p templar-tui
 
 # App — the Xcode Run Script phase builds and bundles libwallet_ffi.dylib
 cd src/templar_wallet

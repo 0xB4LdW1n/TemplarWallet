@@ -9,30 +9,23 @@
 //! All communication is JSON strings. Responses are either:
 //!   `{"ok": <value>}` or `{"err": "<message>"}`.
 
-mod dispatch;
-mod handlers;
-mod state;
-mod types;
-
-#[cfg(test)]
-mod contract_tests;
-
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use zeroize::Zeroize;
 
 use once_cell::sync::{Lazy, OnceCell};
+use templarlib::TemplarLib;
 
-use state::AppFfiState;
-
-static STATE: Lazy<Mutex<AppFfiState>> = Lazy::new(|| Mutex::new(AppFfiState::new()));
+static ENGINE: Lazy<TemplarLib> = Lazy::new(|| match data_dir_override() {
+    Some(path) => TemplarLib::with_data_dir(path),
+    None => TemplarLib::new(),
+});
 
 /// Data directory chosen by the host app before the first `wallet_call`,
 /// consulted ahead of the `TEMPLAR_DATA_DIR` env override in
-/// [`AppFfiState::new`]. Android is the reason it exists: the platform has no
+/// [`TemplarLib::with_data_dir`]. Android is the reason it exists: the platform has no
 /// XDG data dir (`dirs_next::data_dir()` is `None`), Dart cannot set
 /// environment variables, and `std::env::set_var` is undefined behavior once
 /// Flutter's engine threads are running.
@@ -65,7 +58,7 @@ pub unsafe extern "C" fn wallet_set_data_dir(path: *const c_char) -> i32 {
     if dir.is_empty() {
         return 2;
     }
-    if Lazy::get(&STATE).is_some() {
+    if Lazy::get(&ENGINE).is_some() {
         return 3;
     }
     match DATA_DIR_OVERRIDE.set(PathBuf::from(dir)) {
@@ -103,21 +96,15 @@ pub unsafe extern "C" fn wallet_call(method: *const c_char, params: *const c_cha
     // app. Catch it and surface it as a normal error; recover a poisoned lock
     // (the state may be mid-mutation, but every handler validates before it
     // persists, so continuing beats killing the process).
-    let response = std::panic::catch_unwind(|| match STATE.lock() {
-        Ok(mut state) => dispatch::dispatch(&mut state, method_str, &params_val),
-        Err(poisoned) => {
-            let mut state = poisoned.into_inner();
-            dispatch::dispatch(&mut state, method_str, &params_val)
-        }
-    })
-    .unwrap_or_else(|panic| {
-        let msg = panic
-            .downcast_ref::<&str>()
-            .map(|s| s.to_string())
-            .or_else(|| panic.downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| "unknown panic".to_string());
-        serde_json::json!({ "err": format!("internal error ({method_str}): {msg}") })
-    });
+    let response = std::panic::catch_unwind(|| ENGINE.call(method_str, &params_val))
+        .unwrap_or_else(|panic| {
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".to_string());
+            serde_json::json!({ "err": format!("internal error ({method_str}): {msg}") })
+        });
 
     let mut response = response;
     let mut params_val = params_val;

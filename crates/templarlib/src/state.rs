@@ -1,4 +1,4 @@
-//! Global in-process application state shared across all FFI calls.
+//! Global in-process application state shared across all engine calls.
 //! Protected by a Mutex — only one operation at a time (BDK RefCell constraint).
 
 use std::collections::BTreeSet;
@@ -32,7 +32,7 @@ pub enum ChainSyncOutcome {
 }
 
 impl ChainSyncOutcome {
-    /// Wire string crossing the FFI: `"ok"` | `"skipped"` | `"error: <reason>"`.
+    /// Wire string crossing the host API: `"ok"` | `"skipped"` | `"error: <reason>"`.
     pub fn to_wire(&self) -> String {
         match self {
             ChainSyncOutcome::Ok => "ok".to_string(),
@@ -42,7 +42,7 @@ impl ChainSyncOutcome {
     }
 }
 
-pub struct AppFfiState {
+pub struct AppState {
     pub data_dir: PathBuf,
     /// The data folder the *config* knows about: the persisted or default
     /// one, never a `TEMPLAR_DATA_DIR` override. Anything that rewrites the
@@ -81,7 +81,7 @@ pub struct AppFfiState {
     /// locked, secret operations fail until `unlock_vault` succeeds.
     pub vault: Option<Vault>,
     /// Fatal condition detected at init (another instance holds the data dir,
-    /// or the registry is corrupt). While set, every FFI call fails with this
+    /// or the registry is corrupt). While set, every engine call fails with this
     /// message instead of pretending the wallet list is empty — and no save
     /// can overwrite the data on disk.
     pub startup_error: Option<String>,
@@ -111,7 +111,7 @@ fn installer_data_dir_default() -> Option<PathBuf> {
     let conf = exe.parent()?.join(INSTALL_CONF_FILE);
     let raw = std::fs::read_to_string(&conf).ok()?;
     let dir = parse_install_conf_data_dir(&raw)?;
-    eprintln!("[wallet-ffi] install-time data dir → {dir:?} (from {conf:?})");
+    eprintln!("[templarlib] install-time data dir → {dir:?} (from {conf:?})");
     Some(dir)
 }
 
@@ -184,15 +184,26 @@ fn expand_env_refs_with(raw: &str, lookup: impl Fn(&str) -> Option<String>) -> S
     out
 }
 
-impl AppFfiState {
+impl AppState {
     pub fn new() -> Self {
+        Self::new_with_data_dir(None)
+    }
+
+    /// Build an engine state rooted at an explicit application data directory.
+    /// Hosts such as Android and the terminal client use this instead of
+    /// mutating process environment variables.
+    pub fn with_data_dir(data_dir: PathBuf) -> Self {
+        Self::new_with_data_dir(Some(data_dir))
+    }
+
+    fn new_with_data_dir(data_dir_override: Option<PathBuf>) -> Self {
         // TEMPLAR_DATA_DIR overrides the data directory. Each running
         // instance with a distinct value gets its own registry + sled dbs, so
         // several can run at once without fighting over sled's single-process
         // lock. Unset = default behavior.
         // A directory injected by the host through `wallet_set_data_dir`
         // (Android: the app-private support dir) wins over the environment.
-        let env_override = crate::data_dir_override()
+        let env_override = data_dir_override
             .map(|p| p.to_string_lossy().into_owned())
             .or_else(|| std::env::var("TEMPLAR_DATA_DIR").ok())
             .filter(|d| !d.trim().is_empty());
@@ -205,7 +216,7 @@ impl AppFfiState {
             Some(dir) => {
                 let p = PathBuf::from(dir);
                 std::fs::create_dir_all(&p).ok();
-                eprintln!("[wallet-ffi] data dir override → {:?}", p);
+                eprintln!("[templarlib] data dir override → {:?}", p);
                 let cp = p.join("templar_wallet.json");
                 (p.clone(), p, cp)
             }
@@ -242,12 +253,12 @@ impl AppFfiState {
         let saved_network = AppConfig::load_from(&config_path).and_then(|c| c.liquid_network);
         let (liquid_network, liquid_network_env_locked) = match LiquidNetwork::from_env_override() {
             Ok(Some(n)) => {
-                eprintln!("[wallet-ffi] TEMPLAR_LIQUID_NETWORK override → {n}");
+                eprintln!("[templarlib] TEMPLAR_LIQUID_NETWORK override → {n}");
                 (n, true)
             }
             Ok(None) => (saved_network.unwrap_or_default(), false),
             Err(e) => {
-                eprintln!("[wallet-ffi] {e}; using the saved Liquid network");
+                eprintln!("[templarlib] {e}; using the saved Liquid network");
                 (saved_network.unwrap_or_default(), false)
             }
         };
@@ -264,7 +275,7 @@ impl AppFfiState {
         let instance_lock = match Self::acquire_instance_lock(&data_dir) {
             Ok(f) => Some(f),
             Err(msg) => {
-                eprintln!("[wallet-ffi] {msg}");
+                eprintln!("[templarlib] {msg}");
                 startup_error = Some(msg);
                 None
             }
@@ -279,7 +290,7 @@ impl AppFfiState {
         let registry = if startup_error.is_some() {
             WalletRegistry::default()
         } else if vault_is_initialized(&data_dir) {
-            eprintln!("[wallet-ffi] Vault initialized — registry locked until unlock");
+            eprintln!("[templarlib] Vault initialized — registry locked until unlock");
             WalletRegistry::default()
         } else {
             match WalletRegistry::load_checked(&data_dir) {
@@ -289,7 +300,7 @@ impl AppFfiState {
                         "Wallet storage could not be read: {e}. Nothing was deleted — \
                          the damaged file was preserved in the data folder."
                     );
-                    eprintln!("[wallet-ffi] {msg}");
+                    eprintln!("[templarlib] {msg}");
                     startup_error = Some(msg);
                     WalletRegistry::default()
                 }
@@ -298,7 +309,7 @@ impl AppFfiState {
         let asset_registry = Self::asset_registry_for(&liquid_network);
 
         eprintln!(
-            "[wallet-ffi] Initialized. data_dir={:?}, wallets={}, liquid={}",
+            "[templarlib] Initialized. data_dir={:?}, wallets={}, liquid={}",
             data_dir,
             registry.len(),
             liquid_network
@@ -444,7 +455,7 @@ impl AppFfiState {
         }
         self.liquid_network = network;
         self.asset_registry = Self::asset_registry_for(&self.liquid_network);
-        eprintln!("[wallet-ffi] Liquid network → {}", self.liquid_network);
+        eprintln!("[templarlib] Liquid network → {}", self.liquid_network);
         Ok(())
     }
 
@@ -527,7 +538,7 @@ impl AppFfiState {
         use templar_core::bitcoin::hardware::{set_hwi_env, HwiEnv};
 
         if std::env::var("TEMPLAR_HWI_BIN").is_ok_and(|s| !s.trim().is_empty()) {
-            eprintln!("[wallet-ffi] HWI: using TEMPLAR_HWI_BIN override");
+            eprintln!("[templarlib] HWI: using TEMPLAR_HWI_BIN override");
             return;
         }
 
@@ -542,7 +553,7 @@ impl AppFfiState {
         let standalone = data_dir.join("hwi").join(hwi_exe);
         if standalone.is_file() {
             eprintln!(
-                "[wallet-ffi] HWI: standalone binary {}",
+                "[templarlib] HWI: standalone binary {}",
                 standalone.display()
             );
             set_hwi_env(HwiEnv {
@@ -554,7 +565,7 @@ impl AppFfiState {
 
         let venv = data_dir.join("venv");
         if !venv.join(bin_subdir).join(hwi_exe).exists() {
-            eprintln!("[wallet-ffi] HWI: no venv found — relying on `hwi` in PATH");
+            eprintln!("[templarlib] HWI: no venv found — relying on `hwi` in PATH");
             return;
         };
 
@@ -582,7 +593,7 @@ impl AppFfiState {
         };
 
         eprintln!(
-            "[wallet-ffi] HWI env ready: bin={} site_packages={}",
+            "[templarlib] HWI env ready: bin={} site_packages={}",
             hwi_bin.display(),
             site_packages
                 .as_ref()

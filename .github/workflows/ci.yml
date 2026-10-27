@@ -1,5 +1,5 @@
 # The checks every change must pass: formatting, lints and tests of the Rust
-# engine (templar-core + wallet-ffi) and of the Flutter app.
+# Rust workspace (core, reusable library, TUI, FFI) and Flutter app.
 #
 # Runs on every push to main and on every pull request, forks included, and
 # release.yml calls it as the gate in front of the platform builds: a tag can
@@ -72,9 +72,9 @@ jobs:
       # that ship if others are ever added. --locked: a Cargo.lock that no
       # longer matches the manifests fails here instead of being rewritten.
       - name: Clippy
-        run: cargo clippy --locked -p templar-core -p wallet-ffi --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Tests
-        run: cargo test --locked -p templar-core -p wallet-ffi
+        run: cargo test --locked --workspace
 
   flutter:
     name: Flutter

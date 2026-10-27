@@ -33,5 +33,5 @@ done
 ```
 
 Keep the file list in sync with `udev_rules_installed()` in
-`src/wallet-ffi/src/handlers/hw.rs`, which probes for these names to decide
+`crates/templarlib/src/handlers/hw.rs`, which probes for these names to decide
 whether to offer the fix.

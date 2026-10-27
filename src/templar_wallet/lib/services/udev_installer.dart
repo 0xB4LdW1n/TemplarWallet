@@ -15,7 +15,7 @@ import 'dart:io';
 import 'package:flutter/services.dart' show rootBundle;
 
 /// The bundled rules, in load order. Must match the probe list in
-/// `src/wallet-ffi/src/handlers/hw.rs`.
+/// `crates/templarlib/src/handlers/hw.rs`.
 const kUdevRuleFiles = <String>[
   '20-hw1.rules', // Ledger
   '51-coinkite.rules', // Coldcard

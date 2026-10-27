@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "crates/templar-core",
+    "crates/templarlib",
+    "crates/templar-tui",
     "src/wallet-ffi",
 ]
 resolver = "2"

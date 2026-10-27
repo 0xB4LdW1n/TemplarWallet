@@ -44,7 +44,7 @@ asset-registry submission; `templar://` connector mobile UX (plumbing stays).
    `--no-default-features` 205+75, both clippy-clean of new warnings.
 3. **Data-dir injection** ✅ done. `wallet_set_data_dir(const char*) -> i32`
    (0 ok, 1 bad string, 2 empty, 3 too late) fills a process `OnceCell` that
-   `AppFfiState::new()` consults before `TEMPLAR_DATA_DIR`; config, registry,
+   `TemplarLib::with_data_dir()` applies before `TEMPLAR_DATA_DIR`; config, registry,
    vault and sled all live under it. `main.dart` resolves
    `getApplicationSupportDirectory()` once, feeds it to `CrashLog.init` and
    `FfiWalletBridge.setDataDir` before the bridge is constructed.

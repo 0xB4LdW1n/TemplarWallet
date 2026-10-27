@@ -31,7 +31,7 @@ use serde::Serialize;
 use templar_core::{account_xpub_bip84, keyorigin_xpub_bip48, validate_mnemonic};
 
 use crate::handlers::bitcoin::get_wallet_info;
-use crate::state::AppFfiState;
+use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
 pub struct VerifyBackupDto {
@@ -67,7 +67,7 @@ fn normalize(input: &str) -> String {
 
 /// Verify a typed recovery phrase against the wallet's stored public keys.
 pub fn verify_backup(
-    state: &AppFfiState,
+    state: &AppState,
     wallet_id: &str,
     mnemonic: &str,
 ) -> Result<VerifyBackupDto, String> {

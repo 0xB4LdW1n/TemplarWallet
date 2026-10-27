@@ -13,9 +13,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::state::AppFfiState;
+use crate::state::AppState;
 
-// ── DTOs (wire shapes fixed by the FFI contract) ─────────────────────────────
+// ── DTOs (wire shapes fixed by the host contract) ────────────────────────────
 
 /// Cumulative native-coin balance *after* one transaction event.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +57,7 @@ pub struct BalanceEvent {
 
 // ── Handler ──────────────────────────────────────────────────────────────────
 
-pub fn get_balance_history(state: &AppFfiState) -> Result<BalanceHistoryDto, String> {
+pub fn get_balance_history(state: &AppState) -> Result<BalanceHistoryDto, String> {
     let mut events: Vec<BalanceEvent> = Vec::new();
     let mut current_btc: i64 = 0;
     let mut current_lbtc: i64 = 0;

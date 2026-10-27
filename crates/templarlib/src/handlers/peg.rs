@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::state::AppFfiState;
+use crate::state::AppState;
 
 const STORE_FILE: &str = "peg_orders.json";
 
@@ -41,7 +41,7 @@ const LIFECYCLE: [(u64, &str); 4] = [
     (110, "completed"),
 ];
 
-// ── DTOs (wire shapes fixed by the FFI contract) ─────────────────────────────
+// ── DTOs (wire shapes fixed by the host contract) ────────────────────────────
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PegQuoteDto {
@@ -144,7 +144,7 @@ pub fn quote(direction: &str, amount_sats: u64) -> Result<PegQuoteDto, String> {
 
 /// Create a new simulated peg order in `awaiting_deposit`.
 pub fn start(
-    state: &mut AppFfiState,
+    state: &mut AppState,
     wallet_id: &str,
     direction: &str,
     amount_sats: u64,
@@ -192,7 +192,7 @@ pub fn start(
 }
 
 /// Current state of one order, advancing the mock lifecycle first.
-pub fn status(state: &mut AppFfiState, order_id: &str) -> Result<PegOrderDto, String> {
+pub fn status(state: &mut AppState, order_id: &str) -> Result<PegOrderDto, String> {
     let mut store = load_store(&state.data_dir)?;
     let now = now_secs();
     let order = find_order(&mut store, order_id)?;
@@ -205,7 +205,7 @@ pub fn status(state: &mut AppFfiState, order_id: &str) -> Result<PegOrderDto, St
 }
 
 /// All orders for a wallet, newest first, each advanced before returning.
-pub fn list(state: &mut AppFfiState, wallet_id: &str) -> Result<Vec<PegOrderDto>, String> {
+pub fn list(state: &mut AppState, wallet_id: &str) -> Result<Vec<PegOrderDto>, String> {
     let mut store = load_store(&state.data_dir)?;
     let now = now_secs();
     let mut changed = false;
@@ -225,7 +225,7 @@ pub fn list(state: &mut AppFfiState, wallet_id: &str) -> Result<Vec<PegOrderDto>
 }
 
 /// Cancel an order — only allowed while still awaiting the deposit.
-pub fn cancel(state: &mut AppFfiState, order_id: &str) -> Result<PegOrderDto, String> {
+pub fn cancel(state: &mut AppState, order_id: &str) -> Result<PegOrderDto, String> {
     let mut store = load_store(&state.data_dir)?;
     let now = now_secs();
     let order = find_order(&mut store, order_id)?;
@@ -394,14 +394,14 @@ mod tests {
     use super::*;
     use templar_core::registry::{WalletEntry, WalletProfile};
 
-    fn test_state(tag: &str) -> AppFfiState {
+    fn test_state(tag: &str) -> AppState {
         let dir = std::env::temp_dir().join(format!("templar_peg_{}_{}", tag, std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        AppFfiState::new_for_test(dir)
+        AppState::new_for_test(dir)
     }
 
-    fn add_wallet(state: &mut AppFfiState) -> String {
+    fn add_wallet(state: &mut AppState) -> String {
         let entry = WalletEntry::new(
             "Peg Test".into(),
             String::new(),
@@ -414,7 +414,7 @@ mod tests {
         id
     }
 
-    fn sample_order(state: &mut AppFfiState) -> PegOrderDto {
+    fn sample_order(state: &mut AppState) -> PegOrderDto {
         let wallet_id = add_wallet(state);
         start(state, &wallet_id, "in", 100_000, "tlq1qqpayout").unwrap()
     }

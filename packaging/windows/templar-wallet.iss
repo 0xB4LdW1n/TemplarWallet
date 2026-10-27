@@ -149,7 +149,7 @@ SelectDirDesc=Where should [name] be installed?%n%nThis folder holds the program
 //
 // The choice is handed to the app in install.conf beside the executable,
 // which wallet-ffi reads ONCE — on the first run of a fresh install, when it
-// has no config of its own yet (AppFfiState::new, src/wallet-ffi/src/state.rs).
+// has no config of its own yet (AppState, crates/templarlib/src/state.rs).
 // From then on the app remembers the location itself, so a later reinstall can
 // never redirect an existing user away from the wallets they already have.
 //

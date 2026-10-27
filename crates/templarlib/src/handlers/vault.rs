@@ -1,6 +1,6 @@
 //! At-rest encryption control (security report C1).
 //!
-//! Exposes vault lifecycle over the FFI: check status, first-time setup
+//! Exposes vault lifecycle over the host API: check status, first-time setup
 //! (migrates any existing plaintext registry into the encrypted store), unlock
 //! with the passphrase, and lock. While a vault is initialized but locked, the
 //! registry is empty in memory and secret operations fail until `unlock`.
@@ -18,12 +18,12 @@ use templar_core::registry::{load_vault_header, save_vault_header, vault_is_init
 use templar_core::{Vault, WalletRegistry};
 use zeroize::Zeroizing;
 
-use crate::state::AppFfiState;
+use crate::state::AppState;
 
 /// Reports whether encryption is set up and, if so, whether it is unlocked.
 /// `state` distinguishes the three cases for the UI: "none" (no vault set up),
 /// "locked" (vault exists, passphrase not entered), "unlocked".
-pub fn status(state: &AppFfiState) -> serde_json::Value {
+pub fn status(state: &AppState) -> serde_json::Value {
     let initialized = vault_is_initialized(&state.data_dir);
     let unlocked = state.vault.is_some();
     serde_json::json!({
@@ -46,7 +46,7 @@ pub fn status(state: &AppFfiState) -> serde_json::Value {
 /// `require_encryption_for_seed` blocks new seeds, but it is a create-time
 /// check and does nothing about phrases already written. Zero once a vault
 /// exists, because `setup` migrates and shreds them.
-pub fn plaintext_seed_wallets(state: &AppFfiState) -> usize {
+pub fn plaintext_seed_wallets(state: &AppState) -> usize {
     if vault_is_initialized(&state.data_dir) {
         return 0;
     }
@@ -62,7 +62,7 @@ pub fn plaintext_seed_wallets(state: &AppFfiState) -> usize {
 /// must be made to set an app password before going any further. The UI gate
 /// is not dismissible: leaving it open is the same as shipping the seeds
 /// unencrypted, which is the condition the whole vault exists to remove.
-pub fn needs_migration(state: &AppFfiState) -> bool {
+pub fn needs_migration(state: &AppState) -> bool {
     plaintext_seed_wallets(state) > 0
 }
 
@@ -79,7 +79,7 @@ pub fn needs_migration(state: &AppFfiState) -> bool {
 /// This is the backend half of the rule, so it also covers the entry points
 /// that bypass the wizard (the Restore-wallet screen, the direct
 /// `/create-wallet` route).
-pub fn require_encryption_for_seed(state: &AppFfiState) -> Result<(), String> {
+pub fn require_encryption_for_seed(state: &AppState) -> Result<(), String> {
     if !vault_is_initialized(&state.data_dir) {
         return Err(
             "Set an app password first — Templar will not store a recovery \
@@ -97,7 +97,7 @@ pub fn require_encryption_for_seed(state: &AppFfiState) -> Result<(), String> {
 /// would write a plaintext `registry.json` next to `registry.enc` — the next
 /// unlock silently shadows that file, so the new wallet vanishes while its
 /// seed stays in cleartext on disk.
-pub fn ensure_unlocked(state: &AppFfiState) -> Result<(), String> {
+pub fn ensure_unlocked(state: &AppState) -> Result<(), String> {
     if vault_is_initialized(&state.data_dir) && state.vault.is_none() {
         return Err("Vault is locked — unlock with your passphrase first".into());
     }
@@ -106,7 +106,7 @@ pub fn ensure_unlocked(state: &AppFfiState) -> Result<(), String> {
 
 /// First-time setup: derive a vault key from `passphrase`, migrate any existing
 /// plaintext registry into the encrypted store, and leave the vault unlocked.
-pub fn setup(state: &mut AppFfiState, passphrase: &str) -> Result<(), String> {
+pub fn setup(state: &mut AppState, passphrase: &str) -> Result<(), String> {
     if vault_is_initialized(&state.data_dir) {
         return Err("A vault is already set up on this device. Use unlock instead.".into());
     }
@@ -142,15 +142,15 @@ pub fn setup(state: &mut AppFfiState, passphrase: &str) -> Result<(), String> {
         .filter(|n| n.starts_with("registry") && !n.starts_with("registry.enc"))
         .collect();
     if leftovers.is_empty() {
-        eprintln!("[wallet-ffi] Vault created — registry encrypted, no plaintext left behind");
+        eprintln!("[templarlib] Vault created — registry encrypted, no plaintext left behind");
     } else {
-        eprintln!("[wallet-ffi] Vault created but plaintext survived: {leftovers:?}");
+        eprintln!("[templarlib] Vault created but plaintext survived: {leftovers:?}");
     }
     Ok(())
 }
 
 /// Unlock an existing vault and load the encrypted registry into memory.
-pub fn unlock(state: &mut AppFfiState, passphrase: &str) -> Result<(), String> {
+pub fn unlock(state: &mut AppState, passphrase: &str) -> Result<(), String> {
     let header = load_vault_header(&state.data_dir).ok_or("No vault is set up on this device")?;
     let vault = Vault::unlock(passphrase, &header).map_err(|e| e.to_string())?;
     finish_unlock(state, vault)
@@ -165,7 +165,7 @@ pub fn unlock(state: &mut AppFfiState, passphrase: &str) -> Result<(), String> {
 /// this vault (it was re-created after the key was stored) fails with a
 /// "does not match" error. Either way the session is untouched and the UI
 /// falls back to the passphrase screen.
-pub fn unlock_with_key(state: &mut AppFfiState, key_hex: String) -> Result<(), String> {
+pub fn unlock_with_key(state: &mut AppState, key_hex: String) -> Result<(), String> {
     // Own the hex in zeroized storage for as long as it is needed here.
     let key_hex = Zeroizing::new(key_hex);
     let header = load_vault_header(&state.data_dir).ok_or("No vault is set up on this device")?;
@@ -187,7 +187,7 @@ pub fn unlock_with_key(state: &mut AppFfiState, key_hex: String) -> Result<(), S
 /// both the passphrase and the stored-key path, so the two cannot drift: load
 /// the sealed registry with the fresh key and only then install both in the
 /// session. A registry that fails to load leaves the session locked.
-fn finish_unlock(state: &mut AppFfiState, vault: Vault) -> Result<(), String> {
+fn finish_unlock(state: &mut AppState, vault: Vault) -> Result<(), String> {
     let registry = WalletRegistry::load_with_vault(&state.data_dir, Some(&vault))
         .map_err(|e| e.to_string())?;
     state.registry = registry;
@@ -202,7 +202,7 @@ fn finish_unlock(state: &mut AppFfiState, vault: Vault) -> Result<(), String> {
 /// so there is nothing to export before setup or while locked. The returned
 /// string is zeroized on drop; the JSON response carrying it is wiped by
 /// `wallet_free_string` like every other response.
-pub fn export_key(state: &AppFfiState) -> Result<Zeroizing<String>, String> {
+pub fn export_key(state: &AppState) -> Result<Zeroizing<String>, String> {
     if !vault_is_initialized(&state.data_dir) {
         return Err("No vault is set up on this device".into());
     }
@@ -263,7 +263,7 @@ fn hex_nibble(c: u8) -> Result<u8, String> {
 /// attacker who has stolen the file, but this path is reachable by anything
 /// scripting the running app, where ~1 guess/second would still be far too
 /// many: 5 wrong tries lock the gate for 60 seconds.
-pub fn verify(state: &mut AppFfiState, passphrase: &str) -> Result<(), String> {
+pub fn verify(state: &mut AppState, passphrase: &str) -> Result<(), String> {
     const MAX_TRIES: u32 = 5;
     const LOCKOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -307,7 +307,7 @@ pub fn verify(state: &mut AppFfiState, passphrase: &str) -> Result<(), String> {
 /// derived-against and dropped exactly as [`verify`] does with a passphrase.
 /// No guess throttle — a wrong key can only come from a keystore that no
 /// longer matches this vault, and the UI switches the feature off on it.
-pub fn verify_key(state: &AppFfiState, key_hex: String) -> Result<(), String> {
+pub fn verify_key(state: &AppState, key_hex: String) -> Result<(), String> {
     let key_hex = Zeroizing::new(key_hex);
     let header = load_vault_header(&state.data_dir).ok_or("No vault is set up on this device")?;
     let key = key_from_hex(&key_hex)?;
@@ -323,7 +323,7 @@ pub fn verify_key(state: &AppFfiState, key_hex: String) -> Result<(), String> {
 
 /// Lock the vault: drop the in-memory key and every decrypted secret, and close
 /// any open wallet. The next secret operation requires a fresh unlock.
-pub fn lock(state: &mut AppFfiState) {
+pub fn lock(state: &mut AppState) {
     state.vault = None; // Zeroizes the key on drop.
     state.registry = WalletRegistry::default();
     state.active_wallet_id = None;

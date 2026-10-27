@@ -61,13 +61,29 @@ Windows warn on first launch. How to get past that, per platform:
 
 | Path | What |
 |------|------|
-| `crates/templar-core/` | Wallet engine — BDK 0.30 (Bitcoin) + LWK 0.9 (Liquid), Miniscript policy engine, encrypted vault. No GUI dependencies. |
-| `src/wallet-ffi/` | C ABI bridge → `libwallet_ffi.{dylib,so,dll}`; JSON methods in `dispatch.rs` |
+| `crates/templar-core/` | Chain primitives — BDK 0.30, LWK 0.9, Miniscript, and encrypted storage. No UI dependencies. |
+| `crates/templarlib/` | Reusable application engine — state, workflows, DTOs, and the stable JSON method contract. |
+| `crates/templar-tui/` | Terminal client and TUI. Builds the `templar` binary against `templarlib`. |
+| `src/wallet-ffi/` | Thin C ABI adapter → `libwallet_ffi.{dylib,so,dll}` for Flutter. |
 | `src/templar_wallet/` | Flutter app (macOS, Windows, Linux, Android) |
 | `assets/brand/` | Logo SVGs — the source of every icon raster |
 | `packaging/` | DMG artwork, Inno Setup script, Linux desktop entry |
 | `scripts/` | Build, packaging and icon scripts |
 | `docs/` | Reference material — start at [`docs/README.md`](docs/README.md) |
+
+## Terminal client
+
+Install the `templar` CLI and TUI from a source checkout:
+
+```bash
+cargo install --locked --path crates/templar-tui
+templar --help
+templar methods
+templar
+```
+
+See [`docs/guides/TUI.md`](docs/guides/TUI.md) for wallet storage, vault setup,
+wallet creation, receiving, sending, coin freezing, and network configuration.
 
 ---
 
@@ -220,15 +236,23 @@ plain `cargo build --release -p wallet-ffi`.
 ## Develop
 
 ```bash
-cargo test -p templar-core -p wallet-ffi     # engine suite (offline, seconds)
-cargo clippy -p templar-core -p wallet-ffi --all-targets -- -D warnings
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
+
+cargo run -p templar-tui -- --help
+cargo run -p templar-tui -- methods
+cargo run -p templar-tui                         # interactive TUI
 
 cd src/templar_wallet
 flutter analyze
 flutter test
 flutter run -d macos                          # or -d linux / -d windows / an Android device
 ```
+
+`templar call <METHOD> --params <JSON>` exposes the complete application API.
+Use `--params -` for secrets, so they do not enter shell history. See
+[`docs/TEMPLARLIB.md`](docs/TEMPLARLIB.md) for boundaries and examples.
 
 Runtime endpoints can be overridden with `TEMPLAR_ELECTRUM_URL`,
 `TEMPLAR_LIQUID_ELECTRUM_URL`, `TEMPLAR_DATA_DIR`, `TEMPLAR_HWI_BIN` (the full

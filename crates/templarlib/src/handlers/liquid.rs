@@ -9,7 +9,7 @@ use templar_core::{CoinChain, LiquidMultisigSetup, LiquidWalletManager};
 
 use templar_core::{LiquidBackend, LiquidNetwork, REGTEST_DEFAULT_POLICY_ASSET};
 
-use crate::state::AppFfiState;
+use crate::state::AppState;
 use crate::types::{
     IssueResultDto, LiquidNetworkDto, NetChangeDto, ProtocolCheckDto, ProtocolCheckVerdictDto,
     PsetInputDto, PsetInspectionDto, PsetOutputDto, PsetRecipientDto, TxIoDto, TxOutputSpec,
@@ -31,7 +31,7 @@ pub const JADE_PROOF_UNSUPPORTED: &str =
 /// instead (the same key its Liquid multisigs enrol), which the site
 /// accepts as a loan key too; the device must be plugged in and unlocked.
 /// Multisig and policy wallets have no single key to offer.
-pub fn protocol_escrow_xpub(state: &AppFfiState, wallet_id: &str) -> Result<String, String> {
+pub fn protocol_escrow_xpub(state: &AppState, wallet_id: &str) -> Result<String, String> {
     let entry = state.registry.find(wallet_id).ok_or("Wallet not found")?;
     match &entry.profile {
         WalletProfile::Software { mnemonic } => {
@@ -65,7 +65,7 @@ pub fn protocol_escrow_xpub(state: &AppFfiState, wallet_id: &str) -> Result<Stri
 /// a software wallet's escrow account. A Jade would have to be asked for
 /// its 87h key on every call and cannot sign the check yet, so every proof
 /// route gives it [`JADE_PROOF_UNSUPPORTED`] instead.
-fn protocol_proof_key(state: &AppFfiState, wallet_id: &str) -> Result<String, String> {
+fn protocol_proof_key(state: &AppState, wallet_id: &str) -> Result<String, String> {
     let entry = state.registry.find(wallet_id).ok_or("Wallet not found")?;
     match &entry.profile {
         WalletProfile::Software { mnemonic } => {
@@ -82,7 +82,7 @@ fn protocol_proof_key(state: &AppFfiState, wallet_id: &str) -> Result<String, St
 /// wallet's loan key and the site's `challenge` — what a v1.1 connect signs
 /// (with `sign_pset`, like any PSET naming the key) and sends as `proof`.
 pub fn protocol_check_pset(
-    state: &AppFfiState,
+    state: &AppState,
     wallet_id: &str,
     challenge: &str,
 ) -> Result<ProtocolCheckDto, String> {
@@ -102,7 +102,7 @@ pub fn protocol_check_pset(
 /// wallet's loan key on the active network — recomputed here, never taken
 /// from the site. A false verdict carries the reason the review shows.
 pub fn protocol_is_check_pset(
-    state: &AppFfiState,
+    state: &AppState,
     wallet_id: &str,
     challenge: &str,
     pset_base64: &str,
@@ -141,7 +141,7 @@ pub fn protocol_is_check_pset(
 
 /// The active Liquid network and chain backend, for the settings screen and
 /// for anything that must refuse to act across networks.
-pub fn network_info(state: &AppFfiState) -> LiquidNetworkDto {
+pub fn network_info(state: &AppState) -> LiquidNetworkDto {
     let network = &state.liquid_network;
     // A bad `TEMPLAR_LIQUID_BACKEND` value is reported by sync; here it only
     // needs a description, so fall back to the network's natural backend.
@@ -161,7 +161,7 @@ pub fn network_info(state: &AppFfiState) -> LiquidNetworkDto {
 /// Switches the Liquid network. Closes the open wallet: the UI reopens it
 /// (on the new network) and syncs.
 pub fn set_network(
-    state: &mut AppFfiState,
+    state: &mut AppState,
     network: &str,
     policy_asset: Option<&str>,
 ) -> Result<(), String> {
@@ -239,7 +239,7 @@ fn resolve_liquid_outputs(
 }
 
 /// Ticker and precision-aware display amount for one previewed output.
-fn asset_display(state: &AppFfiState, asset_id: &str, amount: u64) -> (String, String) {
+fn asset_display(state: &AppState, asset_id: &str, amount: u64) -> (String, String) {
     if state.is_policy_asset(asset_id) {
         (
             "L-BTC".to_string(),
@@ -258,7 +258,7 @@ fn asset_display(state: &AppFfiState, asset_id: &str, amount: u64) -> (String, S
 /// Preview a Liquid send without broadcasting.
 /// Uses LWK PSET builder + get_details for exact fee.
 pub fn preview_send(
-    state: &AppFfiState,
+    state: &AppState,
     outputs: &[TxOutputSpec],
     default_asset: &str,
 ) -> Result<TxPreviewDto, String> {
@@ -354,7 +354,7 @@ pub fn preview_send(
 /// chain}` for the co-signing flow, mirroring what `send_bitcoin` does with a
 /// PSBT.
 pub fn send_liquid(
-    state: &mut AppFfiState,
+    state: &mut AppState,
     wallet_id: &str,
     outputs: &[TxOutputSpec],
     default_asset: &str,
@@ -441,7 +441,7 @@ enum LiquidSigner {
 /// can derive addresses and receive, so funds arrive, but no signature can
 /// ever be produced for them. That pairing is blocked at creation, and blocked
 /// again here in case an older registry entry carries one.
-fn liquid_signer_for(state: &AppFfiState, wallet_id: &str) -> Result<LiquidSigner, String> {
+fn liquid_signer_for(state: &AppState, wallet_id: &str) -> Result<LiquidSigner, String> {
     let entry = state.registry.find(wallet_id).ok_or("Wallet not found")?;
     match &entry.profile {
         WalletProfile::HardwareWallet { device_model, .. } => {
@@ -480,7 +480,7 @@ fn signatures_on_weakest_input(
 }
 
 /// How many signatures this wallet needs before its PSETs can be finalized.
-fn required_sigs_for(state: &AppFfiState, wallet_id: &str) -> usize {
+fn required_sigs_for(state: &AppState, wallet_id: &str) -> usize {
     match state.registry.find(wallet_id).map(|e| &e.profile) {
         Some(WalletProfile::Multisig { required_sigs, .. }) => *required_sigs,
         _ => 1,
@@ -494,7 +494,7 @@ fn required_sigs_for(state: &AppFfiState, wallet_id: &str) -> usize {
 /// Needs the wallet open: amounts and assets in a PSET are blinded, and only a
 /// wallet holding the blinding key can read them.
 pub fn inspect_pset(
-    state: &AppFfiState,
+    state: &AppState,
     wallet_id: &str,
     pset_base64: &str,
 ) -> Result<PsetInspectionDto, String> {
@@ -636,7 +636,7 @@ pub fn inspect_pset(
 /// whoever the caller is: the PSET belongs to this wallet's network and
 /// derivations ([`LiquidWalletManager::inspect_pset`]), and every output it
 /// asks the key to pay says what it pays in a way the commitments prove.
-fn ensure_pset_signable(state: &AppFfiState, pset_base64: &str) -> Result<(), String> {
+fn ensure_pset_signable(state: &AppState, pset_base64: &str) -> Result<(), String> {
     let liq = state
         .liquid
         .as_ref()
@@ -653,11 +653,7 @@ fn ensure_pset_signable(state: &AppFfiState, pset_base64: &str) -> Result<(), St
     Ok(())
 }
 
-pub fn sign_pset(
-    state: &AppFfiState,
-    wallet_id: &str,
-    pset_base64: &str,
-) -> Result<String, String> {
+pub fn sign_pset(state: &AppState, wallet_id: &str, pset_base64: &str) -> Result<String, String> {
     let entry = state.registry.find(wallet_id).ok_or("Wallet not found")?;
     let mut pset = LiquidWalletManager::pset_from_base64(pset_base64).map_err(|e| e.to_string())?;
     ensure_pset_signable(state, pset_base64)?;
@@ -708,7 +704,7 @@ pub fn sign_pset(
 /// remembers it. Singlesig skips straight to signing.
 #[cfg(feature = "hardware")]
 pub fn sign_pset_hw(
-    state: &AppFfiState,
+    state: &AppState,
     wallet_id: &str,
     pset_base64: &str,
 ) -> Result<String, String> {
@@ -742,7 +738,7 @@ pub fn sign_pset_hw(
 /// Co-signers who sign in parallel each return the same transaction carrying
 /// their own signature; this is what puts them back together. Signing in a
 /// chain (A → B → C) does not need it.
-pub fn combine_psets(state: &AppFfiState, psets_base64: &[String]) -> Result<String, String> {
+pub fn combine_psets(state: &AppState, psets_base64: &[String]) -> Result<String, String> {
     if psets_base64.len() < 2 {
         return Err("Combining needs at least two signed copies of the transaction.".into());
     }
@@ -756,7 +752,7 @@ pub fn combine_psets(state: &AppFfiState, psets_base64: &[String]) -> Result<Str
 }
 
 /// Finalize a fully-signed PSET and broadcast it. Returns the txid.
-pub fn broadcast_pset(state: &AppFfiState, pset_base64: &str) -> Result<String, String> {
+pub fn broadcast_pset(state: &AppState, pset_base64: &str) -> Result<String, String> {
     let liq = state.liquid.as_ref().ok_or("Liquid wallet not open")?;
     let mut pset = LiquidWalletManager::pset_from_base64(pset_base64).map_err(|e| e.to_string())?;
     liq.broadcast(&mut pset).map_err(|e| e.to_string())
@@ -764,7 +760,7 @@ pub fn broadcast_pset(state: &AppFfiState, pset_base64: &str) -> Result<String, 
 
 /// Issue a new Liquid asset and register it with the testnet registry.
 pub fn issue_asset(
-    state: &mut AppFfiState,
+    state: &mut AppState,
     name: &str,
     ticker: &str,
     precision: u8,
@@ -841,7 +837,7 @@ pub fn issue_asset(
 /// `open_wallet` reloads it). A wallet whose liquid side was auto-derived and
 /// never saved gets its config created from the open manager's descriptor.
 /// Best-effort: a failed save is logged, never surfaced.
-fn persist_asset_metadata(state: &mut AppFfiState, metas: &[AssetMetadata]) {
+fn persist_asset_metadata(state: &mut AppState, metas: &[AssetMetadata]) {
     for meta in metas {
         state.asset_registry.add_local_metadata(meta.clone());
     }
@@ -874,13 +870,13 @@ fn persist_asset_metadata(state: &mut AppFfiState, metas: &[AssetMetadata]) {
         }
     }
     if let Err(e) = state.save_registry() {
-        eprintln!("[wallet-ffi] Failed to persist issued-asset metadata: {e}");
+        eprintln!("[templarlib] Failed to persist issued-asset metadata: {e}");
     }
 }
 
 /// Reissue (mint more supply of) an existing Liquid asset.
 pub fn reissue_asset(
-    state: &mut AppFfiState,
+    state: &mut AppState,
     asset_id: &str,
     amount_sats: u64,
 ) -> Result<IssueResultDto, String> {
@@ -901,7 +897,7 @@ pub fn reissue_asset(
 
 /// Burn (permanently destroy) units of a Liquid asset.
 pub fn burn_asset(
-    state: &mut AppFfiState,
+    state: &mut AppState,
     asset_id: &str,
     amount_sats: u64,
 ) -> Result<String, String> {
@@ -913,7 +909,7 @@ pub fn burn_asset(
 
 /// Re-submit an asset contract to the Liquid registry (after domain proof is live).
 pub fn reregister_asset(
-    state: &AppFfiState,
+    state: &AppState,
     asset_id: &str,
     name: &str,
     ticker: &str,

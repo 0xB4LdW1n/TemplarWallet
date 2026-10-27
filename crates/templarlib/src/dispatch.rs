@@ -1,4 +1,4 @@
-//! JSON method dispatch — routes incoming FFI calls to the correct handler.
+//! JSON method dispatch — routes incoming engine calls to the correct handler.
 
 use serde_json::Value;
 
@@ -12,7 +12,7 @@ use crate::handlers::registry as reg;
 use crate::handlers::swaps;
 use crate::handlers::vault;
 use crate::handlers::wallet_ops;
-use crate::state::AppFfiState;
+use crate::state::AppState;
 use crate::types::{
     BroadcastSignedPsbtParams, BuildUnsignedPsbtParams, BurnAssetParams, CombinePsbtsParams,
     CombinePsetsParams, ConsolidateUtxosParams, CreateMultisigParams, CreateWalletParams,
@@ -32,14 +32,14 @@ use crate::types::{
 };
 
 /// Entry point — returns `{"ok": value}` or `{"err": "message"}`.
-pub fn dispatch(state: &mut AppFfiState, method: &str, params: &Value) -> Value {
+pub fn dispatch(state: &mut AppState, method: &str, params: &Value) -> Value {
     match try_dispatch(state, method, params) {
         Ok(v) => serde_json::json!({ "ok": v }),
         Err(e) => serde_json::json!({ "err": e }),
     }
 }
 
-fn try_dispatch(state: &mut AppFfiState, method: &str, params: &Value) -> Result<Value, String> {
+fn try_dispatch(state: &mut AppState, method: &str, params: &Value) -> Result<Value, String> {
     // Version handshake — pure metadata, no state touched. Answered before
     // the startup-error gate so the UI can always tell "engine loaded but
     // init failed" apart from "dylib missing/unloadable".
@@ -857,7 +857,7 @@ fn try_dispatch(state: &mut AppFfiState, method: &str, params: &Value) -> Result
     }
 }
 
-fn ensure_wallet_open(state: &mut AppFfiState, wallet_id: &str) -> Result<(), String> {
+fn ensure_wallet_open(state: &mut AppState, wallet_id: &str) -> Result<(), String> {
     if state.active_wallet_id.as_deref() != Some(wallet_id) {
         wallet_ops::open_wallet(state, wallet_id)?;
     }

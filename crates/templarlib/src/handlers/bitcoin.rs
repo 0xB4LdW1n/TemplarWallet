@@ -5,7 +5,7 @@ use templar_core::{
     check_input_utxos, inspect_psbt, public_descriptor, CoinChain, WalletManager, WalletProfile,
 };
 
-use crate::state::{AppFfiState, ChainSyncOutcome};
+use crate::state::{AppState, ChainSyncOutcome};
 use crate::types::{
     AddressInfoDto, AssetBalanceDto, DashboardDto, PsbtInputDto, PsbtInspectionDto, PsbtOutputDto,
     PsbtSignerDto, RecentActivityDto, TransactionDto, TxIoDto, TxPreviewDto, UtxoDto,
@@ -14,7 +14,7 @@ use crate::types::{
 
 const DUST_THRESHOLD: u64 = 546;
 
-pub fn get_dashboard(state: &AppFfiState, wallet_id: &str) -> Result<DashboardDto, String> {
+pub fn get_dashboard(state: &AppState, wallet_id: &str) -> Result<DashboardDto, String> {
     let entry = state.registry.find(wallet_id).ok_or("Wallet not found")?;
 
     // A Liquid-only entry (hardware ct() descriptor) has no Bitcoin side at
@@ -64,7 +64,7 @@ pub fn get_dashboard(state: &AppFfiState, wallet_id: &str) -> Result<DashboardDt
         let bal = match liq.get_balance() {
             Ok(b) => Some(b),
             Err(e) => {
-                eprintln!("[wallet-ffi] Liquid balance read failed: {e}");
+                eprintln!("[templarlib] Liquid balance read failed: {e}");
                 None
             }
         };
@@ -202,7 +202,7 @@ pub fn get_dashboard(state: &AppFfiState, wallet_id: &str) -> Result<DashboardDt
 /// Wallet-level sync state from the recorded per-chain outcomes:
 /// `"never"` (no sync since this wallet was opened), `"synced"` (every present
 /// chain synced), `"partial"` (some chains failed), `"error"` (all failed).
-fn derive_sync_state(state: &AppFfiState) -> &'static str {
+fn derive_sync_state(state: &AppState) -> &'static str {
     let attempted: Vec<&ChainSyncOutcome> = [&state.last_sync_btc, &state.last_sync_liquid]
         .into_iter()
         .flatten()
@@ -224,7 +224,7 @@ fn derive_sync_state(state: &AppFfiState) -> &'static str {
     }
 }
 
-fn get_recent_activity(state: &AppFfiState) -> Result<Vec<RecentActivityDto>, String> {
+fn get_recent_activity(state: &AppState) -> Result<Vec<RecentActivityDto>, String> {
     let mut items: Vec<RecentActivityDto> = Vec::new();
 
     if let Some(btc) = &state.bitcoin {
@@ -320,7 +320,7 @@ fn newest_first(a_ts: i64, a_conf: u32, b_ts: i64, b_conf: u32) -> std::cmp::Ord
 /// derivation index even if the current address never received anything.
 /// Liquid CT addresses stay stable and ignore `fresh`.
 pub fn generate_receive_address(
-    state: &AppFfiState,
+    state: &AppState,
     asset: &str,
     fresh: bool,
 ) -> Result<AddressInfoDto, String> {
@@ -359,7 +359,7 @@ pub fn generate_receive_address(
     }
 }
 
-pub fn list_transactions(state: &AppFfiState) -> Result<Vec<TransactionDto>, String> {
+pub fn list_transactions(state: &AppState) -> Result<Vec<TransactionDto>, String> {
     let mut result: Vec<TransactionDto> = Vec::new();
 
     if let Some(btc) = &state.bitcoin {
@@ -438,7 +438,7 @@ pub fn list_transactions(state: &AppFfiState) -> Result<Vec<TransactionDto>, Str
     Ok(result)
 }
 
-pub fn list_utxos(state: &AppFfiState, chain: &str) -> Result<Vec<UtxoDto>, String> {
+pub fn list_utxos(state: &AppState, chain: &str) -> Result<Vec<UtxoDto>, String> {
     match chain.to_lowercase().as_str() {
         "liquid" => {
             let liq = state.liquid.as_ref().ok_or("Liquid wallet not open")?;
@@ -574,7 +574,7 @@ pub fn list_utxos(state: &AppFfiState, chain: &str) -> Result<Vec<UtxoDto>, Stri
     }
 }
 
-pub fn get_wallet_info(state: &AppFfiState, wallet_id: &str) -> Result<WalletInfoDto, String> {
+pub fn get_wallet_info(state: &AppState, wallet_id: &str) -> Result<WalletInfoDto, String> {
     let entry = state.registry.find(wallet_id).ok_or("Wallet not found")?;
 
     let (fingerprint, path, script_type, xpub, recv_desc, chg_desc, multi_desc, cosigners) =
@@ -690,7 +690,7 @@ pub fn get_wallet_info(state: &AppFfiState, wallet_id: &str) -> Result<WalletInf
 
     // Never expose a signing descriptor. Multisig/Policy profiles persist the
     // descriptor with the local xprv/tprv embedded (so the wallet can sign);
-    // strip any private key back to its xpub/tpub before it crosses the FFI,
+    // strip any private key back to its xpub/tpub before it crosses the API,
     // since these fields are copied/exported/QR'd as watch-only in the UI (N1).
     let recv_desc = public_descriptor(&recv_desc);
     let chg_desc = public_descriptor(&chg_desc);
@@ -729,7 +729,7 @@ fn format_btc(sats: u64) -> String {
 /// Returns `(ticker, amount)`, e.g. `("L-BTC", "+0.00100000 L-BTC")` or
 /// `("USDT", "-12.50 USDT")` — ticker and precision resolved via the asset
 /// registry (local issued-asset metadata first).
-fn liquid_delta_display(state: &AppFfiState, asset_id: &str, delta: i64) -> (String, String) {
+fn liquid_delta_display(state: &AppState, asset_id: &str, delta: i64) -> (String, String) {
     let sign = if delta >= 0 { "+" } else { "-" };
     let magnitude = delta.unsigned_abs();
     if state.is_policy_asset(asset_id) {
@@ -788,7 +788,7 @@ fn io_to_dto(io: templar_core::TxPreviewIo) -> TxIoDto {
 }
 
 pub fn preview_send(
-    state: &AppFfiState,
+    state: &AppState,
     outputs: &BtcOutputs,
     fee_rate: f32,
     utxos: Option<Vec<String>>,
@@ -856,7 +856,7 @@ pub fn preview_send(
 /// raw. Instead the partially-signed PSBT comes back as a JSON object
 /// `{"partial_psbt", "sigs_have", "sigs_needed"}` for the UI to export.
 pub fn send_bitcoin(
-    state: &AppFfiState,
+    state: &AppState,
     outputs: &BtcOutputs,
     fee_rate: f32,
     utxos: Option<Vec<String>>,
@@ -895,7 +895,7 @@ pub fn send_bitcoin(
 /// before it reaches the network. [`consolidate_utxos`] remains the one-shot
 /// form.
 pub fn build_consolidation_psbt(
-    state: &AppFfiState,
+    state: &AppState,
     outpoints: &[String],
     chain: &str,
     fee_rate: f32,
@@ -920,7 +920,7 @@ pub fn build_consolidation_psbt(
 /// address of this wallet. Drains the selected UTXOs (minus fee), signs with the
 /// software key, and broadcasts. Returns the txid.
 pub fn consolidate_utxos(
-    state: &AppFfiState,
+    state: &AppState,
     outpoints: &[String],
     chain: &str,
     fee_rate: f32,
@@ -964,7 +964,7 @@ pub fn consolidate_utxos(
 /// signature over the same coins).
 #[cfg(feature = "hardware")]
 pub fn sign_transaction_hw(
-    state: &AppFfiState,
+    state: &AppState,
     wallet_id: &str,
     outputs: &BtcOutputs,
     fee_rate: f32,
@@ -1003,7 +1003,7 @@ pub fn sign_transaction_hw(
 /// keeps the signed PSBT.
 #[cfg(feature = "hardware")]
 pub fn send_bitcoin_hw(
-    state: &AppFfiState,
+    state: &AppState,
     wallet_id: &str,
     outputs: &BtcOutputs,
     fee_rate: f32,
@@ -1015,7 +1015,7 @@ pub fn send_bitcoin_hw(
 
 /// Build an unsigned PSBT for an air-gap wallet. Returns base64 PSBT for export.
 pub fn build_unsigned_psbt(
-    state: &AppFfiState,
+    state: &AppState,
     outputs: &BtcOutputs,
     fee_rate: f32,
     utxos: Option<Vec<String>>,
@@ -1034,7 +1034,7 @@ pub fn build_unsigned_psbt(
 }
 
 /// Broadcast a signed PSBT (for air-gap: user signed externally). Returns txid.
-pub fn broadcast_signed_psbt(state: &AppFfiState, signed_psbt_b64: &str) -> Result<String, String> {
+pub fn broadcast_signed_psbt(state: &AppState, signed_psbt_b64: &str) -> Result<String, String> {
     let btc = state.bitcoin.as_ref().ok_or("Bitcoin wallet not open")?;
     let mut psbt = WalletManager::psbt_from_base64(signed_psbt_b64).map_err(|e| e.to_string())?;
     let tx = btc
@@ -1047,7 +1047,7 @@ pub fn broadcast_signed_psbt(state: &AppFfiState, signed_psbt_b64: &str) -> Resu
 /// Display the next receive address on the connected hardware wallet screen.
 /// Returns the address string after the device confirms it.
 #[cfg(feature = "hardware")]
-pub fn get_hw_address(state: &AppFfiState, wallet_id: &str) -> Result<String, String> {
+pub fn get_hw_address(state: &AppState, wallet_id: &str) -> Result<String, String> {
     let entry = state.registry.find(wallet_id).ok_or("Wallet not found")?;
     let fingerprint = match &entry.profile {
         WalletProfile::HardwareWallet {
@@ -1110,7 +1110,7 @@ fn placeholder_info() -> (
 
 /// Lists external BTC addresses that have received funds (received_sats > 0).
 pub fn list_previous_addresses(
-    state: &AppFfiState,
+    state: &AppState,
     asset: &str,
 ) -> Result<Vec<AddressInfoDto>, String> {
     match asset {
@@ -1185,7 +1185,7 @@ pub fn combine_psbts_handler(psbts_base64: &[String]) -> Result<String, String> 
 /// inputs and outputs are the wallet's own — the difference between "a
 /// transaction" and "your coin, leaving".
 pub fn inspect_psbt_handler(
-    state: &AppFfiState,
+    state: &AppState,
     psbt_base64: &str,
 ) -> Result<PsbtInspectionDto, String> {
     let result = inspect_psbt(psbt_base64, state.bitcoin.as_ref()).map_err(|e| e.to_string())?;
@@ -1247,7 +1247,7 @@ pub fn inspect_psbt_handler(
 /// xprv(s) embedded in their descriptor. Pure watch-only wallets (no local
 /// key) are refused.
 pub fn sign_psbt_handler(
-    state: &AppFfiState,
+    state: &AppState,
     wallet_id: &str,
     psbt_base64: &str,
 ) -> Result<String, String> {

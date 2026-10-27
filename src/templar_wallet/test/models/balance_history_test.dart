@@ -1,5 +1,5 @@
 // Decode contract for BalanceHistory.fromJson — the exact shape wallet-ffi's
-// BalanceHistoryDto serializes (see src/wallet-ffi/src/handlers/history.rs,
+// BalanceHistoryDto serializes (see crates/templarlib/src/handlers/history.rs,
 // asserted from the Rust side by `wire_shape_matches_contract_keys`).
 //
 // The fixtures below are the degenerate payloads the handler really produces:

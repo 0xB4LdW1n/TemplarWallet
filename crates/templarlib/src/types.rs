@@ -1,4 +1,4 @@
-//! DTO types that cross the FFI boundary as JSON.
+//! DTO types that cross the application boundary as JSON.
 //! Must stay in sync with Flutter model classes.
 
 // Hardware-only DTOs have no reader without the `hardware` feature.

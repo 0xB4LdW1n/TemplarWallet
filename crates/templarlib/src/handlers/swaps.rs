@@ -1,4 +1,4 @@
-//! LiquiDEX swap / order-book commands — FFI wiring over the templar-core
+//! LiquiDEX swap and order-book commands over the templar-core
 //! engine (`liquid::liquidex`) and book client (`liquid::book`).
 //!
 //! The book is browsed read-only (liquidex.it is mainnet); the make/take
@@ -25,11 +25,11 @@ use templar_core::{
     SwapNetwork, TakePreview, VerifyCheck, VerifyResult,
 };
 
-use crate::state::AppFfiState;
+use crate::state::AppState;
 
 const STORE_FILE: &str = "swap_offers.json";
 
-// ── DTOs (wire shapes fixed by the FFI contract) ─────────────────────────────
+// ── DTOs (wire shapes fixed by the host contract) ────────────────────────────
 
 /// One asset/amount side of a swap, enriched for display.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -168,10 +168,7 @@ pub struct SwapCancelParams {
 ///
 /// The book is a public (mainnet-sourced) service: on a local regtest there
 /// is nothing to list, and the rows would all be untakeable anyway.
-pub fn list_swaps(
-    state: &AppFfiState,
-    include_unavailable: bool,
-) -> Result<Vec<SwapRowDto>, String> {
+pub fn list_swaps(state: &AppState, include_unavailable: bool) -> Result<Vec<SwapRowDto>, String> {
     state.require_liquid_testnet("The public LiquiDEX order book")?;
     let entries = fetch_book(&book_url(include_unavailable)).map_err(|e| e.to_string())?;
     Ok(rows_from_entries(&entries))
@@ -180,7 +177,7 @@ pub fn list_swaps(
 /// Parses and verifies a proposal (offline, or deep with chain access on the
 /// active Liquid network), enriching the maker legs for display.
 pub fn verify(
-    state: &AppFfiState,
+    state: &AppState,
     proposal_json: &str,
     deep: bool,
 ) -> Result<SwapAnalysisDto, String> {
@@ -193,7 +190,7 @@ pub fn verify(
 /// Deep-verifies and builds the real taker transaction (unsigned broadcast-
 /// wise — nothing hits the chain) to report honest fee and change.
 pub fn take_preview(
-    state: &AppFfiState,
+    state: &AppState,
     proposal_json: &str,
     fee_rate: Option<f32>,
 ) -> Result<TakePreviewDto, String> {
@@ -209,7 +206,7 @@ pub fn take_preview(
 /// non-takeable orders (mainnet, failed checks) with the block reason as the
 /// error; on success the signed transaction is broadcast to Liquid testnet.
 pub fn take(
-    state: &AppFfiState,
+    state: &AppState,
     proposal_json: &str,
     fee_rate: Option<f32>,
 ) -> Result<String, String> {
@@ -235,7 +232,7 @@ pub fn take(
 /// persists it to the my-offers store. Offline (broadcast happens when a
 /// taker takes it).
 pub fn make(
-    state: &AppFfiState,
+    state: &AppState,
     wallet_id: &str,
     utxo: &str,
     want_asset_id: &str,
@@ -282,7 +279,7 @@ pub fn make(
 /// `asset_id` at a fresh own address, for the "offer amount X but no exact
 /// coin" path. Signs and broadcasts; the UI re-syncs afterwards.
 pub fn make_prepare(
-    state: &mut AppFfiState,
+    state: &mut AppState,
     asset_id: &str,
     amount_sats: u64,
     _fee_rate: Option<f32>,
@@ -307,7 +304,7 @@ pub fn make_prepare(
 /// This wallet's offers, newest first. Open offers get a best-effort status
 /// refresh: an offered UTXO seen spent on testnet closes the offer (persisted);
 /// network errors and foreign-network prevouts keep the stored status.
-pub fn list_my_offers(state: &AppFfiState, wallet_id: &str) -> Result<Vec<MyOfferDto>, String> {
+pub fn list_my_offers(state: &AppState, wallet_id: &str) -> Result<Vec<MyOfferDto>, String> {
     let mut store = load_store(&state.data_dir)?;
     let mut changed = false;
     for stored in store.offers.iter_mut().filter(|o| o.wallet_id == wallet_id) {
@@ -344,7 +341,7 @@ pub fn list_my_offers(state: &AppFfiState, wallet_id: &str) -> Result<Vec<MyOffe
 /// A frozen offered coin is still cancellable on purpose: the signed offer
 /// can be taken whatever this wallet thinks of the coin, and this self-spend
 /// is the only thing that stops that.
-pub fn cancel(state: &AppFfiState, wallet_id: &str, offer_id: &str) -> Result<String, String> {
+pub fn cancel(state: &AppState, wallet_id: &str, offer_id: &str) -> Result<String, String> {
     let liq = state.liquid.as_ref().ok_or("Liquid wallet not open")?;
     let mut store = load_store(&state.data_dir)?;
     let stored = store

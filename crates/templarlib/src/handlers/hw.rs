@@ -6,7 +6,7 @@
 use templar_core::{HwDeviceInfo, LiquidWalletConfig};
 use templar_core::{WalletEntry, WalletManager, WalletProfile};
 
-use crate::state::AppFfiState;
+use crate::state::AppState;
 #[cfg(feature = "hardware")]
 use crate::types::HwImportResultDto;
 use crate::types::WalletSummaryDto;
@@ -199,7 +199,7 @@ fn receive_descriptor_of(entry: &templar_core::WalletEntry) -> Option<String> {
 /// explicit error for the other.
 #[cfg(feature = "hardware")]
 pub fn sign_psbt_hw(
-    state: &AppFfiState,
+    state: &AppState,
     fingerprint: &str,
     psbt_base64: &str,
 ) -> Result<String, String> {
@@ -263,7 +263,7 @@ pub fn set_hwi_path(path: &str) -> Result<(), String> {
 /// create somewhere funds arrive and never leave.
 #[cfg(feature = "hardware")]
 pub fn import_hw_wallet(
-    state: &mut AppFfiState,
+    state: &mut AppState,
     name: &str,
     fingerprint: &str,
     liquid: bool,
@@ -325,7 +325,7 @@ pub fn import_hw_wallet(
 /// Liquid wallet whose owner device could never sign for it.
 #[cfg(feature = "hardware")]
 pub fn add_liquid_to_wallet(
-    state: &mut AppFfiState,
+    state: &mut AppState,
     wallet_id: &str,
 ) -> Result<WalletSummaryDto, String> {
     crate::handlers::vault::ensure_unlocked(state)?;
@@ -443,7 +443,7 @@ fn summary_of(entry: &WalletEntry) -> WalletSummaryDto {
 /// descriptive error instead of being stored and failing silently at the
 /// next open (which surfaced as a wrong balance).
 pub fn create_watch_only_wallet(
-    state: &mut AppFfiState,
+    state: &mut AppState,
     name: &str,
     recv_desc: &str,
     change_desc: &str,
@@ -594,7 +594,7 @@ pub fn jade_ports() -> Vec<String> {
 /// Bitcoin surface rather than offering a receive address that cannot exist.
 #[cfg(feature = "hardware")]
 pub fn import_jade_liquid_wallet(
-    state: &mut AppFfiState,
+    state: &mut AppState,
     name: &str,
 ) -> Result<WalletSummaryDto, String> {
     // See import_hw_wallet: no registry writes while the vault is locked.
@@ -644,11 +644,11 @@ mod tests {
     /// in parallel used to share one directory — and one of them wiping it
     /// between another's create and save surfaced as an unrelated
     /// "No such file or directory".
-    fn test_state(tag: &str) -> AppFfiState {
+    fn test_state(tag: &str) -> AppState {
         let dir = std::env::temp_dir().join(format!("wallet_ffi_hw_{tag}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        AppFfiState::new_for_test(dir)
+        AppState::new_for_test(dir)
     }
 
     /// Every refusal `add_liquid_to_wallet` makes before it ever touches a

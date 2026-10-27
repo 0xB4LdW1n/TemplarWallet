@@ -1,6 +1,6 @@
 // Decode contract for TxIo.fromJson and the TxOutputSpec.toJson request
 // shape — both sides of the send preview wire format (wallet-ffi TxIoDto /
-// TxOutputSpec in src/wallet-ffi/src/types.rs).
+// TxOutputSpec in crates/templarlib/src/types.rs).
 
 import 'dart:convert';
 

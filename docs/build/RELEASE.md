@@ -330,7 +330,7 @@ data_dir=%APPDATA%\templar_wallet
 ```
 
 `wallet-ffi` reads it **once**, on the first run of a fresh install, when it
-has no config of its own yet (`AppFfiState::new`, `src/wallet-ffi/src/state.rs`).
+has no config of its own yet (`AppState`, `crates/templarlib/src/state.rs`).
 After that the app records the location in `templar_wallet.json` and stops
 consulting the file, so a later reinstall can never redirect an existing user
 away from the wallets they already have. Precedence, highest first:
